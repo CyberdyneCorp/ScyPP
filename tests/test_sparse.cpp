@@ -27,6 +27,24 @@ std::vector<double> tov(const numpp::ndarray& a) {
   const double* p = c.typed_data<double>();
   return std::vector<double>(p, p + c.size());
 }
+numpp::ndarray ivec(const long long* d, int n) {  // int64 array from golden longs
+  numpp::ndarray a(numpp::Shape{n}, numpp::kInt64);
+  int64_t* p = a.typed_data<int64_t>();
+  for (int i = 0; i < n; ++i) p[i] = d[i];
+  return a;
+}
+// Build a CsrMatrix from golden CSR arrays emitted by emit_csr(name, ...).
+#define CSR(name)                                                                      \
+  sp::CsrMatrix(vec(golden::name##_data, golden::name##_data_n),                        \
+                ivec(golden::name##_indices, golden::name##_indices_n),                 \
+                ivec(golden::name##_indptr, golden::name##_indptr_n),                   \
+                static_cast<int64_t>(golden::name##_rows),                              \
+                static_cast<int64_t>(golden::name##_cols))
+double relL2(const std::vector<double>& a, const double* b) {
+  double num = 0, den = 0;
+  for (size_t i = 0; i < a.size(); ++i) { double d = a[i] - b[i]; num += d * d; den += b[i] * b[i]; }
+  return std::sqrt(num / den);
+}
 void cv(const numpp::ndarray& got, const double* exp, int n, double rtol = 1e-9, double atol = 1e-11) {
   auto g = tov(got);
   for (int i = 0; i < n && i < (int)g.size(); ++i) CHECK_CLOSE(g[i], exp[i], rtol, atol);
@@ -77,6 +95,73 @@ TEST_CASE("sparse solvers") {
   auto xg = sp::gmres(A, b);
   cv(A.spmv(xg), G(sp_b), 1e-5, 1e-7);
   CHECK_CLOSE(sp::norm(A), golden::sp_norm_fro, 1e-9, 1e-11);
+}
+
+TEST_CASE("preconditioned iterative solvers + reporting") {
+  auto K = CSR(sp_spd);  // stiff, ill-conditioned SPD system (80 DOF)
+  auto b = vec(golden::sp_spd_b, golden::sp_spd_b_n);
+  const double* xref = golden::sp_spd_x;
+
+  // IC0-preconditioned CG converges to the sparse-direct solution.
+  auto ic = sp::cg_report(K, b, sp::Preconditioner::IC0, 1e-9, 5000);
+  CHECK(ic.converged);
+  CHECK(ic.final_residual < 1e-9);
+  CHECK(relL2(tov(ic.x), xref) < 1e-6);
+
+  // Jacobi-preconditioned CG likewise.
+  auto jac = sp::cg_report(K, b, sp::Preconditioner::Jacobi, 1e-9, 5000);
+  CHECK(jac.converged);
+  CHECK(relL2(tov(jac.x), xref) < 1e-6);
+
+  // Preconditioning accelerates: no more iterations than unpreconditioned CG.
+  auto none = sp::cg_report(K, b, sp::Preconditioner::None, 1e-9, 5000);
+  CHECK(ic.iterations <= none.iterations);
+  CHECK(jac.iterations <= none.iterations);
+
+  // Non-convergence is signaled, not hidden by a silently-wrong vector.
+  auto stalled = sp::cg_report(K, b, sp::Preconditioner::None, 1e-12, 3);
+  CHECK(!stalled.converged);
+  CHECK(stalled.iterations == 3);
+  CHECK(stalled.final_residual > 1e-12);
+  // Reported residual matches the true residual ‖b − A x‖ / ‖b‖ of the returned x.
+  auto Ax = tov(K.spmv(stalled.x));
+  auto bb = tov(b);
+  double num = 0, den = 0;
+  for (size_t i = 0; i < bb.size(); ++i) { double d = bb[i] - Ax[i]; num += d * d; den += bb[i] * bb[i]; }
+  CHECK_CLOSE(stalled.final_residual, std::sqrt(num / den), 1e-7, 1e-12);
+
+  // GMRES with ILU0 preconditioning solves the same system.
+  auto gi = sp::gmres_report(K, b, sp::Preconditioner::ILU0, 1e-9, 2000);
+  CHECK(gi.converged);
+  CHECK(relL2(tov(gi.x), xref) < 1e-6);
+}
+
+TEST_CASE("sparse direct factorization") {
+  // SPD Cholesky matches SciPy's spsolve (n=80 → sparse path by default).
+  auto K = CSR(sp_spd);
+  auto b = vec(golden::sp_spd_b, golden::sp_spd_b_n);
+  CHECK(relL2(tov(sp::spsolve(K, b)), golden::sp_spd_x) < 1e-10);
+  CHECK(relL2(tov(sp::spsolve(K, b, sp::OrderingMethod::Natural)), golden::sp_spd_x) < 1e-10);
+  cv(K.spmv(sp::spsolve(K, b)), golden::sp_spd_b, golden::sp_spd_b_n, 1e-8, 1e-10);
+
+  // General (non-symmetric) LU matches SciPy; the ordering overload forces the
+  // sparse path even below the small-N dense threshold.
+  auto Ag = CSR(sp_gen);
+  auto bg = vec(golden::sp_gen_b, golden::sp_gen_b_n);
+  CHECK(relL2(tov(sp::spsolve(Ag, bg, sp::OrderingMethod::Rcm)), golden::sp_gen_x) < 1e-10);
+  CHECK(relL2(tov(sp::spsolve(Ag, bg, sp::OrderingMethod::Natural)), golden::sp_gen_x) < 1e-10);
+
+  // RCM reduces fill on the arrow matrix (hub ordered last) and still solves.
+  auto Ka = CSR(sp_arrow);
+  auto ba = vec(golden::sp_arrow_b, golden::sp_arrow_b_n);
+  CHECK(relL2(tov(sp::spsolve(Ka, ba, sp::OrderingMethod::Rcm)), golden::sp_arrow_x) < 1e-10);
+  CHECK(sp::factor_nnz(Ka, sp::OrderingMethod::Rcm) < sp::factor_nnz(Ka, sp::OrderingMethod::Natural));
+
+  // Symmetric indefinite: Cholesky rejects the non-positive pivot and the solver
+  // falls back to LU, still matching SciPy.
+  auto Ki = CSR(sp_indef);
+  auto bi = vec(golden::sp_indef_b, golden::sp_indef_b_n);
+  CHECK(relL2(tov(sp::spsolve(Ki, bi, sp::OrderingMethod::Rcm)), golden::sp_indef_x) < 1e-10);
 }
 
 TEST_CASE("csgraph") {

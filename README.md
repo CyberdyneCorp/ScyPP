@@ -96,7 +96,7 @@ namespace. See [`openspec/project.md`](openspec/project.md) for the full map.
 | `interpolate` | `interp1d`, splines, `griddata`/`RBFInterpolator` |
 | `stats` | Distributions, hypothesis tests, QMC, `gaussian_kde` |
 | `signal` | Filtering, filter design, spectral analysis, LTI systems |
-| `sparse` | CSR/CSC/COO formats, `sparse.linalg`, `csgraph` (GPU SpMV) |
+| `sparse` | CSR/CSC/COO formats, `sparse.linalg` (sparse-direct Cholesky/LU + preconditioned CG/GMRES), `csgraph` (GPU SpMV) |
 | `spatial` | KD-trees, distances, ConvexHull/Delaunay/Voronoi, rotations |
 | `ndimage` | Filters, morphology, measurements (GPU separable convolution) |
 | `cluster` · `io` · `datasets` | k-means/hierarchical, Matrix Market/WAV/ARFF I/O, sample datasets |
@@ -144,6 +144,17 @@ checks, 0 divergences**:
   GPU-ready architecture), `sparse.linalg` (`spsolve`/`cg`/`gmres`/`norm`), and
   `sparse.csgraph` (`dijkstra`/`bellman_ford`/`floyd_warshall`/
   `connected_components`/`minimum_spanning_tree`).
+  - **Sparse direct solvers** — `spsolve` factors genuinely sparsely rather than
+    densifying: an up-looking **Cholesky** for SPD systems (e.g. FE stiffness) and
+    a Gilbert–Peierls **LU** with partial pivoting for general systems, both with
+    a fill-reducing **RCM** ordering (`OrderingMethod::{Natural,Rcm,Amd}`; AMD
+    reserved). A dense fallback is kept for very small `N`. `factor_nnz(A,
+    ordering)` reports the factor fill for tuning.
+  - **Preconditioned iterative solvers** — `cg`/`gmres` accept a
+    `Preconditioner` (`None`/`Jacobi`/`IC0`/`ILU0`); the `cg_report`/`gmres_report`
+    variants return an `IterationResult { x, iterations, final_residual,
+    converged }` and **signal non-convergence** instead of returning a
+    silently-wrong vector at `maxiter`.
 - **Phase 10** — `scipp::spatial`: distances (`pdist`/`cdist`/`squareform` + metrics
   with backend dispatch), `KDTree`, 2-D `ConvexHull`/`Delaunay`, and 3-D rotations
   (`transform::Rotation` quat/matrix/euler/rotvec + `apply`/`inv`/compose/`Slerp`).

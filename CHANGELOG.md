@@ -1,5 +1,44 @@
 # Changelog
 
+## 1.2.0 — 2026-07-02 — sparse direct solvers and preconditioned iterative solvers
+
+Fixes [#10](https://github.com/CyberdyneCorp/SciPP/issues/10): `scipp::sparse`
+gains genuinely-sparse direct factorization and preconditioned iterative solvers,
+so finite-element stiffness systems (SPD) beyond a few hundred DOF are now
+viable. Built on **NumPP 1.5.0** and validated against **SciPy 1.15** as the
+numerical oracle: **142 cases / 7603 checks, 0 divergences** (clang, gcc, and
+ASan/UBSan). Phases 1–2 of the `add-sparse-direct-solvers` OpenSpec change;
+reusable factorization objects and diagnostics (Phases 3–4) are tracked for
+follow-up.
+
+### Sparse direct factorization — `spsolve` no longer densifies
+- `spsolve` previously called `numpp::linalg::solve(A.toarray(), b)` — O(N²)
+  memory / O(N³) time (≈0.5 GB / 95 s for an 8268-DOF FE system). It now factors
+  genuinely sparsely (peak memory O(nnz(L))), in `src/sparse/factor.cpp`:
+  - **Cholesky** (up-looking, elimination-tree/`ereach`) for symmetric
+    positive-definite systems — the FE stiffness case.
+  - **LU** (Gilbert–Peierls left-looking, partial pivoting) for general systems.
+  - `spsolve` routes SPD → Cholesky, otherwise (or on a non-positive pivot) → LU,
+    keeping a dense fallback only for very small `N` (≤ 64).
+- **Fill-reducing ordering** — reverse Cuthill–McKee (`OrderingMethod::Rcm`,
+  the default) with `Natural`; `Amd` is reserved and currently resolves to RCM.
+  On an arrow matrix RCM cuts factor fill from 465 to 59 nonzeros.
+- `factor_nnz(A, ordering)` reports factor fill for tuning; `spsolve(A, b,
+  ordering)` always takes the sparse path.
+
+### Preconditioned iterative solvers + convergence reporting
+- `cg`/`gmres` accept a `Preconditioner` — `None`, `Jacobi` (inverse diagonal),
+  `IC0` (zero-fill incomplete Cholesky, for SPD-CG), and `ILU0` (zero-fill
+  incomplete LU, for GMRES); a failed incomplete factorization degrades to Jacobi
+  (`src/sparse/precond.cpp`).
+- New `cg_report`/`gmres_report` return
+  `IterationResult { x, iterations, final_residual, converged }` and **signal
+  non-convergence** rather than returning a silently-wrong vector at `maxiter` —
+  closing the correctness hazard where unpreconditioned CG hit `maxiter` ~16 %
+  off with no warning. GMRES is right-preconditioned so the Krylov residual
+  equals the true residual. The existing `cg`/`gmres`/`spsolve` signatures are
+  preserved.
+
 ## 1.1.0 — 2026-06-28 — special functions, `odr`, GPU acceleration, `just`, and the SciPP rename
 
 The first published release. Builds on the v1.0.0 12-phase foundation with a large
