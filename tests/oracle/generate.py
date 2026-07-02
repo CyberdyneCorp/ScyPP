@@ -628,6 +628,70 @@ def main():
     emit_vec("sp_b", bb)
     emit_vec("sp_spsolve", sspl.spsolve(ssp.csr_array(Asp), bb))
 
+    # ---- stiff SPD system for preconditioned iterative + sparse-direct solvers ----
+    # A 1-D Dirichlet Laplacian tri(-1, 2, -1) (SPD) put through a positive diagonal
+    # congruence D K D with widely varying D — SPD but ill-conditioned, so
+    # unpreconditioned CG stalls while Jacobi/IC0 preconditioning converges fast.
+    def emit_ivec(name, arr):
+        arr = np.asarray(arr).ravel().astype(np.int64)
+        out.append(f"inline const long long {name}[] = {{{', '.join(str(int(v)) for v in arr)}}};")
+        out.append(f"inline constexpr int {name}_n = {len(arr)};")
+
+    def emit_csr(name, M):
+        M = ssp.csr_array(M)
+        M.sort_indices()
+        emit_vec(f"{name}_data", M.data.astype(float))
+        emit_ivec(f"{name}_indices", M.indices)
+        emit_ivec(f"{name}_indptr", M.indptr)
+        emit_scalar(out, f"{name}_rows", float(M.shape[0]))
+        emit_scalar(out, f"{name}_cols", float(M.shape[1]))
+
+    nstiff = 80
+    lap = ssp.diags([-1.0, 2.0, -1.0], [-1, 0, 1], shape=(nstiff, nstiff))
+    scale = np.logspace(0.0, 2.0, nstiff)                 # 1 .. 100 diagonal weights
+    Dsc = ssp.diags(scale)
+    Kspd = (Dsc @ lap @ Dsc).tocsr()
+    Kspd.sort_indices()
+    emit_csr("sp_spd", Kspd)
+    b_spd = np.ones(nstiff)
+    emit_vec("sp_spd_b", b_spd)
+    emit_vec("sp_spd_x", sspl.spsolve(ssp.csr_array(Kspd), b_spd))
+
+    # General non-symmetric sparse system for sparse LU (direct) parity.
+    rng_lu = np.random.default_rng(7)
+    ngen = 40
+    Agen = ssp.random(ngen, ngen, density=0.08, random_state=rng_lu, format="csr")
+    Agen = Agen + ssp.diags(np.full(ngen, 5.0))          # strong diagonal → nonsingular
+    Agen = Agen.tocsr(); Agen.sort_indices()
+    emit_csr("sp_gen", Agen)
+    b_gen = np.arange(1.0, ngen + 1.0)
+    emit_vec("sp_gen_b", b_gen)
+    emit_vec("sp_gen_x", sspl.spsolve(ssp.csr_array(Agen), b_gen))
+
+    # SPD "arrow" matrix: dense first row/column + diagonal. Eliminating the hub
+    # node first (natural order) fills the whole trailing block; RCM orders the
+    # hub last and induces almost no fill — a clean RCM-reduces-fill case.
+    narr = 30
+    Karr = np.zeros((narr, narr))
+    for i in range(narr):
+        Karr[i, i] = 2.0
+    Karr[0, 0] = float(narr + 2)
+    for i in range(1, narr):
+        Karr[0, i] = Karr[i, 0] = 1.0            # SPD (diagonally dominant)
+    emit_csr("sp_arrow", Karr)
+    b_arr = np.ones(narr)
+    emit_vec("sp_arrow_b", b_arr)
+    emit_vec("sp_arrow_x", sspl.spsolve(ssp.csr_array(Karr), b_arr))
+
+    # Symmetric indefinite (negative-definite) system: Cholesky must reject it
+    # and the solver fall back to LU, still matching SciPy.
+    nind = 20
+    Kind = -(ssp.diags([-1.0, 2.0, -1.0], [-1, 0, 1], shape=(nind, nind))).toarray()
+    emit_csr("sp_indef", Kind)
+    b_ind = np.arange(1.0, nind + 1.0)
+    emit_vec("sp_indef_b", b_ind)
+    emit_vec("sp_indef_x", sspl.spsolve(ssp.csr_array(Kind), b_ind))
+
     # csgraph (weighted directed graph)
     G = np.array([[0., 2., 0., 6.], [0., 0., 3., 8.], [0., 0., 0., 0.], [0., 0., 7., 0.]])
     emit_mat(out, "sp_G", G)

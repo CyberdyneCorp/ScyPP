@@ -71,9 +71,49 @@ Backend last_backend();
 ndarray spmv(const CsrMatrix& A, const ndarray& x, Backend forced = Backend::Cpu);
 
 // ---- sparse.linalg ----
+
+// Preconditioner for the iterative solvers. Jacobi is the inverse diagonal;
+// IC0 is a zero-fill incomplete Cholesky (SPD, use with cg); ILU0 is a zero-fill
+// incomplete LU (general, use with gmres).
+enum class Preconditioner { None, Jacobi, IC0, ILU0 };
+
+// Result of a reporting iterative solve. `converged` is false when the solver hit
+// `maxiter` without driving the relative residual below `tol` — callers MUST check
+// it rather than trusting `x` blindly. `final_residual` is ‖b − A x‖ / ‖b‖.
+struct IterationResult {
+  ndarray x;
+  int iterations = 0;
+  double final_residual = 0.0;
+  bool converged = false;
+};
+
+// Fill-reducing ordering for the sparse direct solver. RCM (reverse
+// Cuthill-McKee) is the default; Natural disables reordering. Amd is reserved
+// for a later PR and currently resolves to RCM.
+enum class OrderingMethod { Natural, Rcm, Amd };
+
+// Direct solve of A x = b. The no-ordering overload keeps a dense fallback for
+// very small N and otherwise factors sparsely (SPD → Cholesky, else LU). The
+// ordering overload always factors sparsely with the requested reordering.
 ndarray spsolve(const CsrMatrix& A, const ndarray& b);
+ndarray spsolve(const CsrMatrix& A, const ndarray& b, OrderingMethod ordering);
+
+// Nonzeros in the sparse direct factor (L of the Cholesky/LU factorization) for
+// the given ordering — a diagnostic for comparing fill across orderings.
+int64_t factor_nnz(const CsrMatrix& A, OrderingMethod ordering = OrderingMethod::Rcm);
+
 ndarray cg(const CsrMatrix& A, const ndarray& b, double tol = 1e-5, int maxiter = 1000);
 ndarray gmres(const CsrMatrix& A, const ndarray& b, double tol = 1e-5, int maxiter = 1000);
+
+// Reporting, preconditioner-aware variants. Unlike cg/gmres they never return a
+// silently non-converged vector: inspect `IterationResult::converged`.
+IterationResult cg_report(const CsrMatrix& A, const ndarray& b,
+                          Preconditioner precond = Preconditioner::None,
+                          double tol = 1e-5, int maxiter = 1000);
+IterationResult gmres_report(const CsrMatrix& A, const ndarray& b,
+                             Preconditioner precond = Preconditioner::None,
+                             double tol = 1e-5, int maxiter = 1000);
+
 double norm(const CsrMatrix& A, const std::string& ord = "fro");
 
 // ---- sparse.csgraph ----

@@ -26,4 +26,42 @@ inline numpp::ndarray from_iv(const std::vector<int64_t>& v) {
 inline std::vector<double> dv(const numpp::ndarray& a) { return ld::to_vec(a); }
 inline numpp::ndarray from_dv(const std::vector<double>& v) { return ld::from_vec(v); }
 
+// ---- preconditioners (see precond.cpp) ----
+// kind: 0 None, 1 Jacobi, 2 IC0 (incomplete Cholesky), 3 ILU0 (incomplete LU).
+// A is given as a canonical CSR (row-sorted columns). IC0/ILU0 that fail to build
+// (non-SPD / zero pivot) silently degrade to Jacobi so `apply` stays usable.
+struct Precond {
+  int kind = 0;
+  int64_t n = 0;
+  std::vector<double> invdiag;                                  // Jacobi
+  std::vector<int64_t> Lp, Li;                                  // IC0 lower (incl diag)
+  std::vector<double> Lx, Ldiag;                                //   M = L Lᵀ
+  std::vector<int64_t> Up, Ui, dpos;                            // ILU0 combined LU (CSR of A)
+  std::vector<double> Ux;                                       //   L unit-lower, U upper
+
+  std::vector<double> apply(const std::vector<double>& r) const;
+};
+
+Precond make_precond(int kind, int64_t n, const std::vector<int64_t>& Ap,
+                     const std::vector<int64_t>& Ai, const std::vector<double>& Ax);
+
+// ---- sparse direct factorization (see factor.cpp) ----
+// A is passed as canonical CSR. ordering: 0 Natural, 1 RCM, 2 AMD (→ RCM for now).
+struct DirectResult {
+  std::vector<double> x;      // solution (empty if !ok)
+  int64_t factor_nnz = 0;     // nonzeros in L
+  bool used_cholesky = false; // true if the SPD Cholesky path was taken
+  bool ok = false;            // false ⇒ factorization failed (singular)
+};
+
+// Factor A and solve A x = b sparsely (SPD → Cholesky, else LU).
+DirectResult sparse_direct_solve(int64_t n, const std::vector<int64_t>& Ap,
+                                 const std::vector<int64_t>& Ai, const std::vector<double>& Ax,
+                                 const std::vector<double>& b, int ordering);
+
+// Factor A only and report nnz(L) (Cholesky when SPD, else LU). ok=false ⇒ singular.
+DirectResult sparse_direct_factor_nnz(int64_t n, const std::vector<int64_t>& Ap,
+                                      const std::vector<int64_t>& Ai,
+                                      const std::vector<double>& Ax, int ordering);
+
 }  // namespace scipp::sparse::detail

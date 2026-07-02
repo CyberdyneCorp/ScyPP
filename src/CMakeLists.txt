@@ -62,6 +62,8 @@ add_library(scipp
   sparse/formats.cpp
   sparse/ops.cpp
   sparse/linalg.cpp
+  sparse/precond.cpp
+  sparse/factor.cpp
   sparse/csgraph.cpp
   spatial/distance.cpp
   spatial/kdtree.cpp
