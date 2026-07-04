@@ -1,5 +1,37 @@
 # Changelog
 
+## 1.3.0 — 2026-07-03 — sparse generalized symmetric eigensolver (eigsh)
+
+Fixes [#12](https://github.com/CyberdyneCorp/SciPP/issues/12): `scipp::sparse`
+gains a shift-invert Lanczos generalized symmetric eigensolver, the scalable
+path to the lowest-N modes of large sparse SPD systems that FE modal / frequency
+/ buckling analysis needs (the dense generalized eigensolve caps at a few
+thousand DOF). Built on **NumPP 1.6.0** (O(n³) `eigh`, resolving NumPP#138) and
+validated against **SciPy 1.15**: **143 cases / 7627 checks, 0 divergences**
+(clang and ASan). Implements the `add-sparse-eigsh` OpenSpec change.
+
+### Sparse generalized symmetric eigensolver — `eigsh`
+- `eigsh(K, M, k, sigma = 0, tol = 1e-8, maxiter = 0)` solves the sparse pencil
+  `K x = λ M x` (`K` symmetric, `M` SPD) for the `k` eigenpairs nearest `sigma`
+  (the lowest modes at `sigma = 0`), in `src/sparse/eigen.cpp`:
+  - **Shift-invert**: `(K − σ M)` is factored **once** (reusing the #10 sparse
+    direct factorization) and `(K − σ M)⁻¹` is applied across the iterations —
+    each Lanczos step is one sparse triangular solve, not a refactor.
+  - **M-orthonormal Lanczos** on `C = (K − σ M)⁻¹ M` (self-adjoint in the
+    `M`-inner product) with full reorthogonalization; the small projected
+    tridiagonal is solved with NumPP's dense `eigh`; eigenvalues shift back as
+    `λ = σ + 1/θ`.
+  - Returns `EigshResult { eigenvalues, eigenvectors, iterations, converged }` —
+    **ascending** eigenvalues, **mass-normalized** eigenvectors (`xᵀ M x = 1`),
+    and a `converged` flag gated on the true generalized residual
+    `‖K x − λ M x‖ / ‖K x‖`, so non-convergence is signaled rather than hidden.
+- **Reusable sparse factorization** — `src/sparse/factor.cpp` refactored into a
+  factor-once/solve-many `Factorization` (SPD → Cholesky, else LU), now shared by
+  `spsolve` / `factor_nnz` / `eigsh` (no behavior change to the linear solvers).
+
+### Dependency
+- NumPP pin **1.5.0 → 1.6.0** for the O(n³) symmetric eigensolver.
+
 ## 1.2.0 — 2026-07-02 — sparse direct solvers and preconditioned iterative solvers
 
 Fixes [#10](https://github.com/CyberdyneCorp/SciPP/issues/10): `scipp::sparse`

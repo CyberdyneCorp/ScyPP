@@ -2,6 +2,7 @@
 // Internal helpers for scipp::sparse: int64 / double array <-> std::vector.
 
 #include <cstdint>
+#include <memory>
 #include <vector>
 
 #include "numpp/core/dtype.hpp"
@@ -63,5 +64,16 @@ DirectResult sparse_direct_solve(int64_t n, const std::vector<int64_t>& Ap,
 DirectResult sparse_direct_factor_nnz(int64_t n, const std::vector<int64_t>& Ap,
                                       const std::vector<int64_t>& Ai,
                                       const std::vector<double>& Ax, int ordering);
+
+// Reusable factorization (factor once, solve many) — the shift-invert operator
+// for the sparse eigensolver. `Factorization` is opaque (defined in factor.cpp);
+// callers hold it via shared_ptr and never need its layout.
+struct Factorization;
+std::shared_ptr<Factorization> sparse_direct_factorize(int64_t n, const std::vector<int64_t>& Ap,
+                                                       const std::vector<int64_t>& Ai,
+                                                       const std::vector<double>& Ax, int ordering);
+bool factorization_ok(const std::shared_ptr<Factorization>& F);
+std::vector<double> factorization_solve(const std::shared_ptr<Factorization>& F,
+                                        const std::vector<double>& b);
 
 }  // namespace scipp::sparse::detail

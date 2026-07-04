@@ -116,6 +116,31 @@ IterationResult gmres_report(const CsrMatrix& A, const ndarray& b,
 
 double norm(const CsrMatrix& A, const std::string& ord = "fro");
 
+// ---- sparse generalized symmetric eigensolver ----
+
+// Result of eigsh. `eigenvalues` are the k requested eigenvalues in ascending
+// order; `eigenvectors` is (n, k) with column i the mass-normalized eigenvector
+// (xᵀ M x = 1) for eigenvalues[i]. `iterations` is the Lanczos subspace dimension
+// built; `converged` is false when the k modes did not meet `tol` within the
+// subspace cap — callers MUST check it, like IterationResult::converged.
+struct EigshResult {
+  ndarray eigenvalues;
+  ndarray eigenvectors;
+  int iterations = 0;
+  bool converged = false;
+};
+
+// Lowest-k (or nearest-`sigma`) eigenpairs of the sparse generalized symmetric
+// problem K x = λ M x, with K symmetric and M symmetric-positive-definite, via
+// shift-invert Lanczos. The operator (K − σ M)⁻¹ is factored once (reusing the
+// sparse direct factorization) and applied across the M-orthonormal Lanczos
+// iterations; the small projected tridiagonal problem is solved densely and the
+// eigenvalues are shifted back as λ = σ + 1/θ. `sigma` selects the target
+// (0 for the lowest modes of an SPD pencil; a small negative shift moves off a
+// rigid-body/near-zero mode). `maxiter <= 0` picks a default subspace cap.
+EigshResult eigsh(const CsrMatrix& K, const CsrMatrix& M, int k,
+                  double sigma = 0.0, double tol = 1e-8, int maxiter = 0);
+
 // ---- sparse.csgraph ----
 namespace csgraph {
 ndarray dijkstra(const CsrMatrix& graph, bool directed = true);          // all-pairs distances
