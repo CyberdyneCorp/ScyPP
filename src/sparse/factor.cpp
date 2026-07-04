@@ -6,15 +6,36 @@
 // matrix is never densified.
 #include <algorithm>
 #include <cmath>
+#include <memory>
+#include <utility>
 #include <vector>
 
 #include "scipp/sparse/detail.hpp"
 
 namespace scipp::sparse::detail {
-namespace {
 
 using Idx = std::vector<int64_t>;
 using Val = std::vector<double>;
+
+// Cholesky factor (up-looking): A(perm,perm) = L Lᵀ with L in CSC (Lp/Li/Lx).
+struct Chol { int64_t n = 0; Idx Lp, Li; Val Lx; Idx perm; bool ok = false; };
+
+// LU factor (Gilbert–Peierls, partial pivoting): P A Q = L U (P = pinv, Q = q).
+struct Lu { int64_t n = 0; Idx Lp, Li; Val Lx; Idx Up, Ui; Val Ux; Idx pinv, q; bool ok = false; };
+
+// A reusable sparse direct factor (factor once, solve many): SPD → Cholesky,
+// otherwise LU. Only the branch selected by `used_cholesky` is populated. Held
+// opaquely by callers through a shared_ptr — see sparse_direct_factorize.
+struct Factorization {
+  int64_t n = 0;
+  bool ok = false;
+  bool used_cholesky = false;
+  int64_t factor_nnz = 0;
+  Chol chol;
+  Lu lu;
+};
+
+namespace {
 
 // Column-compressed matrix (CSC).
 struct Csc {
@@ -138,8 +159,6 @@ Csc permuted_csc(int64_t n, const Idx& Ap, const Idx& Ai, const Val& Ax, const I
 
 // ---- Cholesky (up-looking) -------------------------------------------------
 
-struct Chol { int64_t n = 0; Idx Lp, Li; Val Lx; Idx perm; bool ok = false; };
-
 // Elimination tree of a symmetric matrix from its upper triangle (CSC).
 Idx etree(const Csc& C) {
   int64_t n = C.n;
@@ -231,8 +250,6 @@ Val chol_solve(const Chol& F, const Val& b) {
 }
 
 // ---- LU (Gilbert–Peierls left-looking, partial pivoting) -------------------
-
-struct Lu { int64_t n = 0; Idx Lp, Li; Val Lx; Idx Up, Ui; Val Ux; Idx pinv, q; bool ok = false; };
 
 // Depth-first search from node j over the columns of the partially-built L,
 // pushing finished nodes onto xi[top..]. `mark` flags visited nodes.
@@ -352,27 +369,37 @@ Idx make_ordering(int64_t n, const Idx& Ap, const Idx& Ai, int ordering, Idx& ip
   return perm;
 }
 
-// Factor A with the given ordering, optionally solving A x = b (solve=false just
-// reports factor nnz). SPD → Cholesky, otherwise LU.
-DirectResult factor_impl(int64_t n, const Idx& Ap, const Idx& Ai, const Val& Ax,
-                         const Val& b, int ordering, bool solve) {
-  DirectResult R;
+// Factor A (canonical CSR) with the given ordering into a reusable Factorization.
+// SPD → up-looking Cholesky, otherwise Gilbert–Peierls LU. ok=false ⇒ singular.
+Factorization build_factorization(int64_t n, const Idx& Ap, const Idx& Ai, const Val& Ax,
+                                  int ordering) {
+  Factorization F; F.n = n;
   Idx iperm;
   Idx perm = make_ordering(n, Ap, Ai, ordering, iperm);
   if (is_symmetric(n, Ap, Ai, Ax)) {
     Csc C = permuted_csc(n, Ap, Ai, Ax, iperm);
-    Chol F = chol_factor(C, perm);
-    if (F.ok) {
-      R.ok = true; R.used_cholesky = true; R.factor_nnz = F.Lp[n];
-      if (solve) R.x = chol_solve(F, b);
-      return R;
+    Chol c = chol_factor(C, perm);
+    if (c.ok) {
+      F.ok = true; F.used_cholesky = true; F.factor_nnz = c.Lp[n]; F.chol = std::move(c);
+      return F;
     }
   }
   Csc Acsc = csr_to_csc(n, Ap, Ai, Ax);        // plain CSC of A
-  Lu F = lu_factor(Acsc, perm);                // RCM order as the column ordering
-  if (!F.ok) { R.ok = false; return R; }
-  R.ok = true; R.used_cholesky = false; R.factor_nnz = static_cast<int64_t>(F.Li.size());
-  if (solve) R.x = lu_solve(F, b);
+  Lu lu = lu_factor(Acsc, perm);               // RCM order as the column ordering
+  if (!lu.ok) { F.ok = false; return F; }
+  F.ok = true; F.used_cholesky = false;
+  F.factor_nnz = static_cast<int64_t>(lu.Li.size()); F.lu = std::move(lu);
+  return F;
+}
+
+// Solve A x = b reusing an existing factor.
+Val apply_factorization(const Factorization& F, const Val& b) {
+  return F.used_cholesky ? chol_solve(F.chol, b) : lu_solve(F.lu, b);
+}
+
+DirectResult to_result(const Factorization& F) {
+  DirectResult R;
+  R.ok = F.ok; R.used_cholesky = F.used_cholesky; R.factor_nnz = F.factor_nnz;
   return R;
 }
 
@@ -380,12 +407,26 @@ DirectResult factor_impl(int64_t n, const Idx& Ap, const Idx& Ai, const Val& Ax,
 
 DirectResult sparse_direct_solve(int64_t n, const Idx& Ap, const Idx& Ai, const Val& Ax,
                                  const Val& b, int ordering) {
-  return factor_impl(n, Ap, Ai, Ax, b, ordering, /*solve=*/true);
+  Factorization F = build_factorization(n, Ap, Ai, Ax, ordering);
+  DirectResult R = to_result(F);
+  if (F.ok) R.x = apply_factorization(F, b);
+  return R;
 }
 
 DirectResult sparse_direct_factor_nnz(int64_t n, const Idx& Ap, const Idx& Ai, const Val& Ax,
                                       int ordering) {
-  return factor_impl(n, Ap, Ai, Ax, {}, ordering, /*solve=*/false);
+  return to_result(build_factorization(n, Ap, Ai, Ax, ordering));
+}
+
+std::shared_ptr<Factorization> sparse_direct_factorize(int64_t n, const Idx& Ap, const Idx& Ai,
+                                                       const Val& Ax, int ordering) {
+  return std::make_shared<Factorization>(build_factorization(n, Ap, Ai, Ax, ordering));
+}
+
+bool factorization_ok(const std::shared_ptr<Factorization>& F) { return F && F->ok; }
+
+Val factorization_solve(const std::shared_ptr<Factorization>& F, const Val& b) {
+  return apply_factorization(*F, b);
 }
 
 }  // namespace scipp::sparse::detail

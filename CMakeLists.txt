@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.25)
 
 project(SciPP
-  VERSION 1.2.0
+  VERSION 1.3.0
   DESCRIPTION "Modern C++20 port of SciPy, built on NumPP"
   LANGUAGES CXX)
 
@@ -35,7 +35,7 @@ set(NumPP_DIR "${SCIPP_NUMPP_PREFIX}/lib/cmake/NumPP" CACHE PATH "" FORCE)
 
 # Resolve only the pinned install prefix, ignoring any stale build-tree package
 # registered by NumPP's own build in ~/.cmake/packages.
-find_package(NumPP 1.5.0 CONFIG REQUIRED
+find_package(NumPP 1.6.0 CONFIG REQUIRED
   NO_CMAKE_PACKAGE_REGISTRY
   NO_CMAKE_SYSTEM_PACKAGE_REGISTRY)
 message(STATUS "SciPP: found NumPP ${NumPP_VERSION}")

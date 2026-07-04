@@ -164,6 +164,87 @@ TEST_CASE("sparse direct factorization") {
   CHECK(relL2(tov(sp::spsolve(Ki, bi, sp::OrderingMethod::Rcm)), golden::sp_indef_x) < 1e-10);
 }
 
+TEST_CASE("generalized symmetric eigensolver (eigsh)") {
+  // Lowest-6 modes of the 1-D bar pencil K x = λ M x (n=64) via shift-invert
+  // Lanczos, matching SciPy's eigsh(sigma=0). K is SPD, M is the SPD consistent
+  // mass matrix.
+  auto K = CSR(sp_eig_K);
+  auto Mm = CSR(sp_eig_M);
+  const int k = static_cast<int>(golden::sp_eig_k);
+
+  auto r = sp::eigsh(K, Mm, k, /*sigma=*/0.0, /*tol=*/1e-9, /*maxiter=*/0);
+  CHECK(r.converged);
+  CHECK(r.iterations >= k);
+
+  // Eigenvalues match SciPy (ascending).
+  auto vals = tov(r.eigenvalues);
+  CHECK(static_cast<int>(vals.size()) == k);
+  for (int i = 0; i < k; ++i) CHECK_CLOSE(vals[i], golden::sp_eig_vals[i], 1e-7, 1e-9);
+
+  // Each returned pair satisfies the generalized eigen-relation and is
+  // mass-normalized (xᵀ M x = 1); distinct modes are M-orthogonal.
+  const int64_t n = K.rows();
+  auto Evec = tov(r.eigenvectors);              // (n × k), column-major within a row
+  auto col = [&](int c) {
+    numpp::ndarray x(numpp::Shape{n}, numpp::kFloat64);
+    double* p = x.typed_data<double>();
+    for (int64_t i = 0; i < n; ++i) p[i] = Evec[i * k + c];
+    return x;
+  };
+  for (int c = 0; c < k; ++c) {
+    auto x = col(c);
+    auto Kx = tov(K.spmv(x));
+    auto Mx = tov(Mm.spmv(x));
+    auto xv = tov(x);
+    double num = 0, den = 0, xMx = 0;
+    for (int64_t i = 0; i < n; ++i) {
+      double res = Kx[i] - vals[c] * Mx[i];
+      num += res * res; den += Kx[i] * Kx[i];
+      xMx += xv[i] * Mx[i];
+    }
+    CHECK(std::sqrt(num / den) < 1e-7);         // ‖K x − λ M x‖ / ‖K x‖
+    CHECK_CLOSE(xMx, 1.0, 1e-8, 1e-10);         // mass-normalized
+  }
+  // M-orthogonality of modes 0 and 1: x0ᵀ M x1 ≈ 0.
+  {
+    auto x0 = col(0), x1 = col(1);
+    auto Mx1 = tov(Mm.spmv(x1));
+    auto x0v = tov(x0);
+    double g = 0; for (int64_t i = 0; i < n; ++i) g += x0v[i] * Mx1[i];
+    CHECK(std::fabs(g) < 1e-8);
+  }
+
+  // Non-convergence is signaled, not hidden: a subspace capped at k cannot
+  // resolve all k modes to a punishing tolerance, so converged must be false.
+  auto stalled = sp::eigsh(K, Mm, k, /*sigma=*/0.0, /*tol=*/1e-14, /*maxiter=*/k);
+  CHECK(!stalled.converged);
+  CHECK(stalled.iterations <= k);
+
+  // Nonzero shift: exercises the A = K − σ M assembly and λ = σ + 1/θ shift-back.
+  // sigma sits between modes 2 and 3, so eigsh returns the modes bracketing it
+  // (the three closest eigenvalues, ascending), each satisfying the eigen-relation.
+  const double sigma = 0.01;
+  auto rs = sp::eigsh(K, Mm, 3, sigma, /*tol=*/1e-9, /*maxiter=*/0);
+  CHECK(rs.converged);
+  auto vs = tov(rs.eigenvalues);
+  auto Es = tov(rs.eigenvectors);
+  const int ks = 3;
+  CHECK(vs[0] < vs[1]);
+  CHECK(vs[1] < vs[2]);
+  // The three nearest sigma are eigenvalues 1..3 of the pencil (sorted ascending).
+  for (int c = 0; c < ks; ++c) CHECK_CLOSE(vs[c], golden::sp_eig_vals[c], 1e-6, 1e-9);
+  for (int c = 0; c < ks; ++c) {
+    numpp::ndarray x(numpp::Shape{n}, numpp::kFloat64);
+    double* p = x.typed_data<double>();
+    for (int64_t i = 0; i < n; ++i) p[i] = Es[i * ks + c];
+    auto Kx = tov(K.spmv(x));
+    auto Mx = tov(Mm.spmv(x));
+    double num = 0, den = 0;
+    for (int64_t i = 0; i < n; ++i) { double res = Kx[i] - vs[c] * Mx[i]; num += res * res; den += Kx[i] * Kx[i]; }
+    CHECK(std::sqrt(num / den) < 1e-7);
+  }
+}
+
 TEST_CASE("csgraph") {
   auto G = sp::CsrMatrix::from_dense(M(sp_G));
   cv(sp::csgraph::dijkstra(G, true), golden::sp_dijkstra_d, golden::sp_dijkstra_r * golden::sp_dijkstra_c);

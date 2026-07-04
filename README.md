@@ -96,7 +96,7 @@ namespace. See [`openspec/project.md`](openspec/project.md) for the full map.
 | `interpolate` | `interp1d`, splines, `griddata`/`RBFInterpolator` |
 | `stats` | Distributions, hypothesis tests, QMC, `gaussian_kde` |
 | `signal` | Filtering, filter design, spectral analysis, LTI systems |
-| `sparse` | CSR/CSC/COO formats, `sparse.linalg` (sparse-direct Cholesky/LU + preconditioned CG/GMRES), `csgraph` (GPU SpMV) |
+| `sparse` | CSR/CSC/COO formats, `sparse.linalg` (sparse-direct Cholesky/LU + preconditioned CG/GMRES + shift-invert `eigsh`), `csgraph` (GPU SpMV) |
 | `spatial` | KD-trees, distances, ConvexHull/Delaunay/Voronoi, rotations |
 | `ndimage` | Filters, morphology, measurements (GPU separable convolution) |
 | `cluster` · `io` · `datasets` | k-means/hierarchical, Matrix Market/WAV/ARFF I/O, sample datasets |
@@ -104,7 +104,7 @@ namespace. See [`openspec/project.md`](openspec/project.md) for the full map.
 ## Project status
 
 **v1.0 — all 12 phases shipped.** Every public SciPy subpackage's commonly-used
-surface is ported, built on NumPP and validated against SciPy 1.15 — **7503 oracle
+surface is ported, built on NumPP and validated against SciPy 1.15 — **7627 oracle
 checks, 0 divergences**:
 
 - **Phase 1** — `scipp::special` (gamma/erf/Bessel/exponential integrals/
@@ -155,6 +155,14 @@ checks, 0 divergences**:
     variants return an `IterationResult { x, iterations, final_residual,
     converged }` and **signal non-convergence** instead of returning a
     silently-wrong vector at `maxiter`.
+  - **Generalized symmetric eigensolver** — `eigsh(K, M, k, sigma)` solves the
+    sparse pencil `K x = λ M x` (SPD `M`) for the lowest-`k` (or nearest-`sigma`)
+    modes via **shift-invert Lanczos**: `(K − σ M)` is factored **once** (reusing
+    the sparse direct factorization) and applied across an `M`-orthonormal
+    Lanczos, with the small projected problem solved by NumPP's dense `eigh`.
+    Returns an `EigshResult { eigenvalues, eigenvectors, iterations, converged }`
+    with ascending eigenvalues and mass-normalized (`xᵀ M x = 1`) eigenvectors —
+    the scalable path for FE modal / frequency / buckling analysis.
 - **Phase 10** — `scipp::spatial`: distances (`pdist`/`cdist`/`squareform` + metrics
   with backend dispatch), `KDTree`, 2-D `ConvexHull`/`Delaunay`, and 3-D rotations
   (`transform::Rotation` quat/matrix/euler/rotvec + `apply`/`inv`/compose/`Slerp`).

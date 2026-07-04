@@ -28,7 +28,7 @@ class SciPPConan(ConanFile):
 
     def requirements(self):
         # Pinned NumPP dependency (the array engine + device backends).
-        self.requires("numpp/1.3.2")
+        self.requires("numpp/1.6.0")
 
     def layout(self):
         cmake_layout(self)

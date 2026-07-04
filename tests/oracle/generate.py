@@ -692,6 +692,22 @@ def main():
     emit_vec("sp_indef_b", b_ind)
     emit_vec("sp_indef_x", sspl.spsolve(ssp.csr_array(Kind), b_ind))
 
+    # ---- generalized symmetric eigenproblem K x = λ M x (shift-invert eigsh) ----
+    # A 1-D bar: stiffness K = tri(-1, 2, -1) (SPD with fixed ends) and consistent
+    # mass M = tri(1, 4, 1)/6 (SPD). Both are large-enough to force the sparse
+    # path; the lowest-k modes are computed by shift-invert Lanczos at sigma=0.
+    neig = 64
+    Keig = ssp.diags([-1.0, 2.0, -1.0], [-1, 0, 1], shape=(neig, neig)).tocsr()
+    Meig = (ssp.diags([1.0, 4.0, 1.0], [-1, 0, 1], shape=(neig, neig)) / 6.0).tocsr()
+    Keig.sort_indices(); Meig.sort_indices()
+    emit_csr("sp_eig_K", Keig)
+    emit_csr("sp_eig_M", Meig)
+    keig = 6
+    emit_scalar(out, "sp_eig_k", float(keig))
+    w_eig = sspl.eigsh(Keig, k=keig, M=Meig, sigma=0.0, which="LM",
+                       return_eigenvectors=False)
+    emit_vec("sp_eig_vals", np.sort(w_eig))
+
     # csgraph (weighted directed graph)
     G = np.array([[0., 2., 0., 6.], [0., 0., 3., 8.], [0., 0., 0., 0.], [0., 0., 7., 0.]])
     emit_mat(out, "sp_G", G)
