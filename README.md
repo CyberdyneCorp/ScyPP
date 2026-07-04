@@ -104,7 +104,7 @@ namespace. See [`openspec/project.md`](openspec/project.md) for the full map.
 ## Project status
 
 **v1.0 — all 12 phases shipped.** Every public SciPy subpackage's commonly-used
-surface is ported, built on NumPP and validated against SciPy 1.15 — **7627 oracle
+surface is ported, built on NumPP and validated against SciPy 1.15 — **7673 oracle
 checks, 0 divergences**:
 
 - **Phase 1** — `scipp::special` (gamma/erf/Bessel/exponential integrals/
@@ -157,12 +157,16 @@ checks, 0 divergences**:
     silently-wrong vector at `maxiter`.
   - **Generalized symmetric eigensolver** — `eigsh(K, M, k, sigma)` solves the
     sparse pencil `K x = λ M x` (SPD `M`) for the lowest-`k` (or nearest-`sigma`)
-    modes via **shift-invert Lanczos**: `(K − σ M)` is factored **once** (reusing
-    the sparse direct factorization) and applied across an `M`-orthonormal
-    Lanczos, with the small projected problem solved by NumPP's dense `eigh`.
-    Returns an `EigshResult { eigenvalues, eigenvectors, iterations, converged }`
-    with ascending eigenvalues and mass-normalized (`xᵀ M x = 1`) eigenvectors —
-    the scalable path for FE modal / frequency / buckling analysis.
+    modes via **thick-restart shift-invert Lanczos**: `(K − σ M)` is factored
+    **once** (reusing the sparse direct factorization) and applied across an
+    `M`-orthonormal Lanczos, with the small projected problem solved by NumPP's
+    dense `eigh`. The operator is internally rescaled and the invariant-subspace
+    test is relative to its scale, so **stiff** pencils (`λ ~ 1e10`+) don't break
+    down spuriously; **thick restart** deflates converged Ritz pairs so
+    **clustered / near-degenerate** spectra converge. Returns an
+    `EigshResult { eigenvalues, eigenvectors, iterations, converged }` with
+    ascending eigenvalues and mass-normalized (`xᵀ M x = 1`) eigenvectors — the
+    scalable path for FE modal / frequency / buckling analysis.
 - **Phase 10** — `scipp::spatial`: distances (`pdist`/`cdist`/`squareform` + metrics
   with backend dispatch), `KDTree`, 2-D `ConvexHull`/`Delaunay`, and 3-D rotations
   (`transform::Rotation` quat/matrix/euler/rotvec + `apply`/`inv`/compose/`Slerp`).

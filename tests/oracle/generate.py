@@ -708,6 +708,24 @@ def main():
                        return_eigenvectors=False)
     emit_vec("sp_eig_vals", np.sort(w_eig))
 
+    # Tightly-clustered pencil: two identical 1-D bars whose stiffnesses differ by
+    # 0.1% (block-diagonal K, M), so eigenvalues come in near-degenerate pairs
+    # (~1e-3 apart). A single Krylov cycle can't separate them — thick restart
+    # must deflate the converged pair and keep refining the rest.
+    nb = 50
+    lap_b = ssp.diags([-1.0, 2.0, -1.0], [-1, 0, 1], shape=(nb, nb))
+    mass_b = ssp.diags([1.0, 4.0, 1.0], [-1, 0, 1], shape=(nb, nb)) / 6.0
+    Kclus = ssp.block_diag([lap_b, 1.001 * lap_b]).tocsr()
+    Mclus = ssp.block_diag([mass_b, mass_b]).tocsr()
+    Kclus.sort_indices(); Mclus.sort_indices()
+    emit_csr("sp_clus_K", Kclus)
+    emit_csr("sp_clus_M", Mclus)
+    kclus = 6
+    emit_scalar(out, "sp_clus_k", float(kclus))
+    w_clus = sspl.eigsh(Kclus, k=kclus, M=Mclus, sigma=0.0, which="LM",
+                        return_eigenvectors=False)
+    emit_vec("sp_clus_vals", np.sort(w_clus))
+
     # csgraph (weighted directed graph)
     G = np.array([[0., 2., 0., 6.], [0., 0., 3., 8.], [0., 0., 0., 0.], [0., 0., 7., 0.]])
     emit_mat(out, "sp_G", G)

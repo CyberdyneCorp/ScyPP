@@ -1,5 +1,39 @@
 # Changelog
 
+## 1.4.0 — 2026-07-04 — robust `eigsh`: thick-restart Lanczos + relative breakdown
+
+Fixes [#15](https://github.com/CyberdyneCorp/SciPP/issues/15): the `eigsh`
+generalized eigensolver (#12) failed on **stiff** finite-element pencils and on
+**tightly-clustered** spectra. Both traced to the single-shot Lanczos driver in
+`src/sparse/eigen.cpp`. Validated against **SciPy 1.15**: **145 cases / 7673
+checks, 0 divergences** (clang, gcc, ASan).
+
+### Relative breakdown threshold + internal rescaling (bug #1)
+- The invariant-subspace test was **absolute** (`beta > 1e-12`). For a stiff
+  pencil (`E ≈ 2.1e5`, `ρ ≈ 7.8e-9`) the eigenvalues are `λ ≈ 1e10 … 1e13`, so
+  the shift-invert operator's eigenvalues — and the Lanczos `beta` — legitimately
+  sit at `~1e-11` and tripped the threshold after ~6 steps, spuriously capping
+  the subspace (higher modes came out as noise). The test is now **relative** to
+  a running operator scale.
+- The shift-invert operator is internally **rescaled** by `s = trace(K)/trace(M)`
+  so the recurrence runs at O(1) magnitude (`λ = σ + s/θ`), removing the need for
+  the caller-side pencil rescaling downstream code used as a workaround.
+
+### Thick-restart Lanczos (bug #2)
+- When the wanted modes have not converged within one Krylov cycle, `eigsh` now
+  **thick-restarts** (Wu & Simon): it retains the Ritz vectors nearest `σ` (their
+  Ritz values become the projected diagonal, an arrowhead spike couples them to
+  the residual) plus the residual vector, and continues — deflating converged
+  pairs so **clustered / near-degenerate** FE spectra converge. Full
+  reorthogonalization keeps the basis M-orthonormal across restarts.
+
+### API note (source-compatible)
+- No signature change to `eigsh` / `EigshResult`. `maxiter` is reinterpreted as
+  the maximum number of **restart cycles** (`≤ 0` selects a default of 200), and
+  `iterations` now reports the total Lanczos steps performed across cycles.
+  Convergence remains gated on the true generalized residual
+  `‖K x − λ M x‖ / ‖K x‖`.
+
 ## 1.3.1 — 2026-07-04 — `just gpu-detect` backend probe
 
 Developer-tooling only — no library or API changes.
