@@ -214,11 +214,13 @@ TEST_CASE("generalized symmetric eigensolver (eigsh)") {
     CHECK(std::fabs(g) < 1e-8);
   }
 
-  // Non-convergence is signaled, not hidden: a subspace capped at k cannot
-  // resolve all k modes to a punishing tolerance, so converged must be false.
-  auto stalled = sp::eigsh(K, Mm, k, /*sigma=*/0.0, /*tol=*/1e-14, /*maxiter=*/k);
+  // Non-convergence is signaled, not hidden: a single restart cycle at a
+  // punishing (sub-machine) tolerance cannot converge, so converged is false and
+  // the effort is bounded by the one-cycle Krylov dimension.
+  auto stalled = sp::eigsh(K, Mm, k, /*sigma=*/0.0, /*tol=*/1e-14, /*maxiter=*/1);
   CHECK(!stalled.converged);
-  CHECK(stalled.iterations <= k);
+  CHECK(stalled.iterations > 0);
+  CHECK(stalled.iterations <= static_cast<int>(n));
 
   // Nonzero shift: exercises the A = K − σ M assembly and λ = σ + 1/θ shift-back.
   // sigma sits between modes 2 and 3, so eigsh returns the modes bracketing it
@@ -242,6 +244,88 @@ TEST_CASE("generalized symmetric eigensolver (eigsh)") {
     double num = 0, den = 0;
     for (int64_t i = 0; i < n; ++i) { double res = Kx[i] - vs[c] * Mx[i]; num += res * res; den += Kx[i] * Kx[i]; }
     CHECK(std::sqrt(num / den) < 1e-7);
+  }
+}
+
+TEST_CASE("eigsh stiff pencil (relative breakdown, issue #15.1)") {
+  // Same bar pencil scaled to consistent FE units (E≈2.1e5, ρ≈7.8e-9): the
+  // eigenvalues jump to λ≈1e10, so the shift-invert operator's eigenvalues (and
+  // the Lanczos β) sit at ~1e-11. An absolute β>1e-12 breakdown test spuriously
+  // caps the subspace at ~6 steps; the relative test + internal rescaling must
+  // let all modes converge. Scaling the pencil scales eigenvalues by exactly
+  // (E_scale / ρ_scale), so the reference is the original pencil's values × that.
+  const double eScale = 2.1e5, rhoScale = 7.8e-9, ratio = eScale / rhoScale;
+  auto K = CSR(sp_eig_K).scaled(eScale);
+  auto Mm = CSR(sp_eig_M).scaled(rhoScale);
+  const int k = static_cast<int>(golden::sp_eig_k);
+  const int64_t n = K.rows();
+
+  auto r = sp::eigsh(K, Mm, k, /*sigma=*/0.0, /*tol=*/1e-8, /*maxiter=*/0);
+  CHECK(r.converged);
+  auto vals = tov(r.eigenvalues);
+  CHECK(static_cast<int>(vals.size()) == k);
+  for (int i = 0; i < k; ++i)
+    CHECK_CLOSE(vals[i], ratio * golden::sp_eig_vals[i], 1e-6, 1e-3);  // rel tol on ~1e10 values
+
+  // Every returned mode satisfies the generalized eigen-relation on the stiff
+  // matrices (would floor at ~1e-3 under the old absolute-threshold cap).
+  auto Evec = tov(r.eigenvectors);
+  for (int c = 0; c < k; ++c) {
+    numpp::ndarray x(numpp::Shape{n}, numpp::kFloat64);
+    double* p = x.typed_data<double>();
+    for (int64_t i = 0; i < n; ++i) p[i] = Evec[i * k + c];
+    auto Kx = tov(K.spmv(x));
+    auto Mx = tov(Mm.spmv(x));
+    double num = 0, den = 0;
+    for (int64_t i = 0; i < n; ++i) { double res = Kx[i] - vals[c] * Mx[i]; num += res * res; den += Kx[i] * Kx[i]; }
+    CHECK(std::sqrt(num / den) < 1e-7);
+  }
+}
+
+TEST_CASE("eigsh clustered spectrum via thick restart (issue #15.2)") {
+  // Two 1-D bars whose stiffnesses differ by 0.1% → near-degenerate eigenvalue
+  // pairs (~1e-3 apart). A single Krylov cycle cannot separate them; thick
+  // restart must deflate converged pairs and keep refining to reach SciPy's
+  // eigsh values.
+  auto K = CSR(sp_clus_K);
+  auto Mm = CSR(sp_clus_M);
+  const int k = static_cast<int>(golden::sp_clus_k);
+  const int64_t n = K.rows();
+
+  auto r = sp::eigsh(K, Mm, k, /*sigma=*/0.0, /*tol=*/1e-9, /*maxiter=*/0);
+  CHECK(r.converged);
+  // Resolving the tight pairs requires more than one cycle (ncv = max(2k+1,20)).
+  CHECK(r.iterations > 20);
+
+  auto vals = tov(r.eigenvalues);
+  CHECK(static_cast<int>(vals.size()) == k);
+  for (int i = 0; i < k; ++i) CHECK_CLOSE(vals[i], golden::sp_clus_vals[i], 1e-6, 1e-9);
+
+  // Each mode satisfies the eigen-relation and is mass-normalized; the two
+  // members of a near-degenerate pair are still M-orthogonal.
+  auto Evec = tov(r.eigenvectors);
+  auto col = [&](int c) {
+    numpp::ndarray x(numpp::Shape{n}, numpp::kFloat64);
+    double* p = x.typed_data<double>();
+    for (int64_t i = 0; i < n; ++i) p[i] = Evec[i * k + c];
+    return x;
+  };
+  for (int c = 0; c < k; ++c) {
+    auto x = col(c);
+    auto Kx = tov(K.spmv(x)), Mx = tov(Mm.spmv(x)), xv = tov(x);
+    double num = 0, den = 0, xMx = 0;
+    for (int64_t i = 0; i < n; ++i) {
+      double res = Kx[i] - vals[c] * Mx[i];
+      num += res * res; den += Kx[i] * Kx[i]; xMx += xv[i] * Mx[i];
+    }
+    CHECK(std::sqrt(num / den) < 1e-7);
+    CHECK_CLOSE(xMx, 1.0, 1e-7, 1e-9);
+  }
+  {  // near-degenerate pair (modes 0,1) is M-orthogonal
+    auto x0 = col(0), x1 = col(1);
+    auto Mx1 = tov(Mm.spmv(x1)), x0v = tov(x0);
+    double g = 0; for (int64_t i = 0; i < n; ++i) g += x0v[i] * Mx1[i];
+    CHECK(std::fabs(g) < 1e-7);
   }
 }
 
