@@ -73,6 +73,9 @@ std::shared_ptr<Factorization> sparse_direct_factorize(int64_t n, const std::vec
                                                        const std::vector<int64_t>& Ai,
                                                        const std::vector<double>& Ax, int ordering);
 bool factorization_ok(const std::shared_ptr<Factorization>& F);
+// True iff the factored matrix was SPD (the Cholesky path was taken) — a free
+// Sturm/definiteness bit for the buckling shift walk.
+bool factorization_definite(const std::shared_ptr<Factorization>& F);
 std::vector<double> factorization_solve(const std::shared_ptr<Factorization>& F,
                                         const std::vector<double>& b);
 

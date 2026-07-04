@@ -166,7 +166,19 @@ checks, 0 divergences**:
     **clustered / near-degenerate** spectra converge. Returns an
     `EigshResult { eigenvalues, eigenvectors, iterations, converged }` with
     ascending eigenvalues and mass-normalized (`xᵀ M x = 1`) eigenvectors — the
-    scalable path for FE modal / frequency / buckling analysis.
+    scalable path for FE modal / frequency analysis. The same engine is exposed as
+    `eigsh_gen(A, B, k, sigma)` for a general symmetric pencil `A x = θ B x` with
+    **indefinite `A`** and **SPD `B`** (the nearest-`sigma` primitive).
+  - **Linear-buckling eigensolver** — `eigsh_buckling(K, K_geo, k)` returns the `k`
+    **smallest positive** load factors `λ` of `(K + λ K_geo) φ = 0` (elastic `K`
+    SPD, geometric `K_geo` symmetric-indefinite) — the `*BUCKLE` eigenproblem. It
+    reduces to `K_geo φ = μ (K φ)`, `μ = −1/λ` (so the critical factor is the
+    *most-negative* `μ`, not the one nearest `σ = 0`) and runs an **adaptive-σ
+    walk** driven by cheap factor-only definiteness probes (a free Sturm bit:
+    `(K_geo − σ K)` is SPD ⇔ `σ` is below the whole spectrum) to place the shift
+    below all modes, then a single `eigsh_gen` solve. Returns a `BucklingResult
+    { load_factors, modes, iterations, shifts, converged }` with ascending positive
+    load factors and `K`-normalized modes — the scalable path for FE buckling analysis.
 - **Phase 10** — `scipp::spatial`: distances (`pdist`/`cdist`/`squareform` + metrics
   with backend dispatch), `KDTree`, 2-D `ConvexHull`/`Delaunay`, and 3-D rotations
   (`transform::Rotation` quat/matrix/euler/rotvec + `apply`/`inv`/compose/`Slerp`).
