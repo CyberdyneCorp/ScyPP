@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.3.1 — 2026-07-04 — `just gpu-detect` backend probe
+
+Developer-tooling only — no library or API changes.
+
+- Add a `just gpu-detect` recipe: a no-build, cross-platform (Linux / macOS /
+  Windows) probe that reports which GPU backends are usable on the host
+  (**CUDA** via `nvidia-smi`, **OpenCL** via `clinfo` / ICD loader, **Metal** on
+  Apple) and recommends the matching `configure` flag
+  (`-DSCIPP_WITH_{CUDA,OPENCL,METAL}=ON`), falling back to the always-available
+  CPU backend. Since SciPP's GPU backends come from NumPP, the recommendation
+  notes that the chosen backend also needs a NumPP built with the matching
+  `NUMPP_WITH_*` flag.
+
 ## 1.3.0 — 2026-07-03 — sparse generalized symmetric eigensolver (eigsh)
 
 Fixes [#12](https://github.com/CyberdyneCorp/SciPP/issues/12): `scipp::sparse`
