@@ -425,6 +425,14 @@ std::shared_ptr<Factorization> sparse_direct_factorize(int64_t n, const Idx& Ap,
 
 bool factorization_ok(const std::shared_ptr<Factorization>& F) { return F && F->ok; }
 
+// True when the factored matrix is symmetric-positive-definite: the SPD Cholesky
+// path was taken (Cholesky is attempted only for symmetric input and succeeds
+// iff every pivot is positive). For a symmetric pencil (A − σ B) with B SPD this
+// is a free Sturm bit — it holds iff σ lies below the whole generalized spectrum.
+bool factorization_definite(const std::shared_ptr<Factorization>& F) {
+  return F && F->ok && F->used_cholesky;
+}
+
 Val factorization_solve(const std::shared_ptr<Factorization>& F, const Val& b) {
   return apply_factorization(*F, b);
 }

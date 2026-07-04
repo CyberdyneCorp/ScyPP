@@ -141,6 +141,42 @@ struct EigshResult {
 EigshResult eigsh(const CsrMatrix& K, const CsrMatrix& M, int k,
                   double sigma = 0.0, double tol = 1e-8, int maxiter = 0);
 
+// Generalized shift-invert Lanczos for the symmetric pencil A x = θ B x with A
+// symmetric (indefinite permitted) and B symmetric-positive-definite. Returns the
+// k eigenpairs whose eigenvalues θ are nearest `sigma`, as an EigshResult with θ
+// ascending and B-normalized eigenvectors (xᵀ B x = 1). The operator (A − σ B) is
+// factored once (SPD Cholesky when definite, otherwise LU) and reused across the
+// B-orthonormal iterations. This is the shared primitive underneath eigsh (its
+// SPD-A, sigma = 0 lowest-modes special case) and eigsh_buckling.
+EigshResult eigsh_gen(const CsrMatrix& A, const CsrMatrix& B, int k,
+                      double sigma = 0.0, double tol = 1e-8, int maxiter = 0);
+
+// Result of eigsh_buckling. `load_factors` are the k smallest positive load
+// factors λ in ascending order; `modes` is (n, k) with column i the K-normalized
+// buckling mode (φᵀ K φ = 1). `iterations` is the Lanczos steps of the solve,
+// `shifts` the number of factorizations spent locating the shift, and `converged`
+// is false when fewer than k positive factors were resolved — callers MUST check it.
+struct BucklingResult {
+  ndarray load_factors;
+  ndarray modes;
+  int iterations = 0;
+  int shifts = 0;
+  bool converged = false;
+};
+
+// Linear-buckling eigensolver: the k smallest positive load factors λ of
+// (K + λ K_geo) φ = 0, with K (elastic stiffness) SPD and K_geo (geometric
+// stiffness) symmetric, typically indefinite. The pencil is reduced to
+// K_geo φ = μ (K φ) with μ = −1/λ (so the smallest positive λ is the most-negative
+// μ, NOT the μ nearest σ = 0); an adaptive-σ walk driven by cheap factorization-
+// only definiteness probes ((K_geo − σ K) is SPD ⇔ σ is below the whole spectrum)
+// places the shift below all modes, then a single generalized shift-invert Lanczos
+// solve returns the wanted modes. Non-positive load factors are filtered out.
+// `sigma0 > 0` seeds the walk with a trial load factor (≤ 0 auto-scales from
+// ‖K_geo‖_F / ‖K‖_F); `maxiter <= 0` picks a default.
+BucklingResult eigsh_buckling(const CsrMatrix& K, const CsrMatrix& K_geo, int k,
+                              double sigma0 = 0.0, double tol = 1e-8, int maxiter = 0);
+
 // ---- sparse.csgraph ----
 namespace csgraph {
 ndarray dijkstra(const CsrMatrix& graph, bool directed = true);          // all-pairs distances

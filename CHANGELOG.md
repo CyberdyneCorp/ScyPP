@@ -1,5 +1,50 @@
 # Changelog
 
+## 1.5.0 — 2026-07-04 — sparse buckling eigensolver: indefinite `A`, SPD `B`, smallest positive `λ`
+
+Adds [#18](https://github.com/CyberdyneCorp/SciPP/issues/18): a scalable path to
+the **linear-buckling** eigenproblem `(K + λ K_geo) φ = 0` (elastic stiffness `K`
+SPD, geometric stiffness `K_geo` symmetric-**indefinite**), needed by CalculiX++
+`*BUCKLE` which had only a dense `O(n³)` reduction (no path beyond ~1500 DOF).
+Both additions layer on the existing thick-restart Lanczos engine — **no new
+Krylov code**. Validated against a dense `scipy.linalg.eigh(K_geo, K)` oracle:
+**146 cases / 7710 checks, 0 divergences** (clang, gcc, ASan).
+
+### Generalized shift-invert primitive `eigsh_gen` (issue option b)
+- `eigsh_gen(A, B, k, sigma, tol, maxiter)` solves the symmetric pencil
+  `A x = θ B x` with `A` symmetric (**indefinite permitted**) and `B` SPD,
+  returning the `k` eigenpairs nearest `sigma`, `B`-normalized, θ ascending. The
+  existing `eigsh(K, M, …)` becomes a thin forwarder to the shared core; its
+  signature and behavior are unchanged (covered by the existing `sp_eig_*` /
+  `sp_clus_*` goldens).
+- The operator scale is hardened to `s = max(|trace(A)|, trace(B))/trace(B)` so it
+  stays well-conditioned when `A` has non-positive trace — identical to the old
+  `trace(K)/trace(M)` for every SPD pencil (the scale cancels in `λ = σ + s/θ`).
+
+### Buckling driver `eigsh_buckling` (issue option a)
+- `eigsh_buckling(K, K_geo, k, sigma0, tol, maxiter)` returns a `BucklingResult
+  { load_factors, modes, iterations, shifts, converged }` — the `k` **smallest
+  positive** load factors `λ` ascending, with `K`-normalized modes (`φᵀ K φ = 1`).
+- Maps the pencil to `K_geo φ = μ (K φ)`, `μ = −1/λ`, so the smallest positive `λ`
+  is the algebraically **most-negative** `μ` — *not* the `μ` nearest `σ = 0` (a
+  naive `σ = 0` target returns the largest factor and spurious negative factors).
+- Locates the shift via an **adaptive-σ walk** using cheap factorization-only
+  definiteness probes: because `B = K` is SPD, `(K_geo − σ K)` is SPD ⇔ `σ` lies
+  below the whole spectrum — a free Sturm bit the sparse factorizer already records
+  (`used_cholesky`), exposed as `detail::factorization_definite`. A geometric
+  bracket + a few bisections place `σ*` below all modes, then a **single**
+  `eigsh_gen` solve yields the wanted modes. Non-positive load factors are filtered;
+  `converged` is `false` when fewer than `k` positive factors are resolved.
+
+### Tests
+- Two committed buckling pencils in `tests/oracle/generate.py` frozen into
+  `tests/golden/golden.hpp`: a closed-form pinned-pinned Euler beam element
+  (`λ = {12, 60}`) and a discriminating indefinite 3-DOF pencil (`λ = {3.837,
+  9.766}`) that fails loudly if the sign/target is inverted. New `test_sparse.cpp`
+  case checks load factors vs oracle, the buckling residual `‖K φ + λ K_geo φ‖ /
+  ‖K φ‖`, `φᵀ K φ ≈ 1`, that **no** returned factor is `≤ 0`, the `eigsh_gen`
+  primitive on the indefinite pencil, and the too-few-positive-modes signal.
+
 ## 1.4.0 — 2026-07-04 — robust `eigsh`: thick-restart Lanczos + relative breakdown
 
 Fixes [#15](https://github.com/CyberdyneCorp/SciPP/issues/15): the `eigsh`

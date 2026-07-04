@@ -726,6 +726,30 @@ def main():
                         return_eigenvectors=False)
     emit_vec("sp_clus_vals", np.sort(w_clus))
 
+    # ---- linear-buckling pencil (K + λ K_geo) φ = 0 (eigsh_buckling) ----
+    # K elastic stiffness (SPD), K_geo geometric stiffness (symmetric, indefinite).
+    # Reduce to K_geo φ = μ (K φ), μ = −1/λ; the smallest positive load factor is
+    # the most-negative μ. Reference: dense eigh(K_geo, K), filter to positive
+    # λ = −1/μ, ascending (mirrors CalculiX++'s dense *BUCKLE reduction).
+    def emit_buckle(pre, Kd, Kgd):
+        Kd, Kgd = np.asarray(Kd, float), np.asarray(Kgd, float)
+        emit_csr(pre + "_K", ssp.csr_array(Kd))
+        emit_csr(pre + "_Kgeo", ssp.csr_array(Kgd))
+        mu = sla.eigh(Kgd, Kd, eigvals_only=True)
+        lam = np.sort([-1.0 / t for t in mu if t < 0.0])
+        emit_vec(pre + "_lambda", lam)
+
+    # Closed-form: pinned-pinned single Euler-Bernoulli beam element reduced to its
+    # two end-rotation DOFs. Analytical discrete buckling loads λ = {12, 60} (×EI/L²);
+    # λ₁ = 12 is the discrete analogue of the Euler continuum π² ≈ 9.87.
+    emit_buckle("sp_buckle", [[4.0, 2.0], [2.0, 4.0]],
+                (-1.0 / 30.0) * np.array([[4.0, -1.0], [-1.0, 4.0]]))
+    # Discriminating pencil with a genuinely indefinite K_geo (eig {−0.5, −0.2, 1/3}):
+    # μ = {−0.2606, −0.1024, +0.1785} ⇒ positive λ = {3.837, 9.766}. Smallest positive
+    # (3.837) is the most-negative μ, NOT the μ nearest σ=0 (which gives 9.766).
+    emit_buckle("sp_buckle2", [[2.0, 0.5, 0.0], [0.5, 2.0, 0.5], [0.0, 0.5, 2.0]],
+                np.diag([-0.5, 1.0 / 3.0, -0.2]))
+
     # csgraph (weighted directed graph)
     G = np.array([[0., 2., 0., 6.], [0., 0., 3., 8.], [0., 0., 0., 0.], [0., 0., 7., 0.]])
     emit_mat(out, "sp_G", G)

@@ -329,6 +329,114 @@ TEST_CASE("eigsh clustered spectrum via thick restart (issue #15.2)") {
   }
 }
 
+TEST_CASE("sparse buckling eigensolver (eigsh_buckling, issue #18)") {
+  // Buckling pencil (K + λ K_geo) φ = 0: K SPD, K_geo symmetric-indefinite; wanted
+  // are the k smallest POSITIVE load factors λ, ascending. Verified against a dense
+  // eigh(K_geo, K) oracle (λ = −1/μ, positive, ascending) frozen in golden.hpp.
+  auto buckle_residual = [](const sp::CsrMatrix& K, const sp::CsrMatrix& Kg,
+                            const numpp::ndarray& phi, double lam) {
+    auto Kx = tov(K.spmv(phi)), Gx = tov(Kg.spmv(phi));
+    double num = 0, den = 0;
+    for (size_t i = 0; i < Kx.size(); ++i) {
+      double r = Kx[i] + lam * Gx[i];        // ‖K φ + λ K_geo φ‖ / ‖K φ‖
+      num += r * r; den += Kx[i] * Kx[i];
+    }
+    return std::sqrt(num / den);
+  };
+
+  // Closed-form Euler beam element: analytical discrete buckling loads λ = {12, 60}.
+  {
+    auto K = CSR(sp_buckle_K);
+    auto Kg = CSR(sp_buckle_Kgeo);
+    const int64_t n = K.rows();
+    auto r = sp::eigsh_buckling(K, Kg, /*k=*/2, /*sigma0=*/0.0, /*tol=*/1e-10, /*maxiter=*/0);
+    CHECK(r.converged);
+    auto lf = tov(r.load_factors);
+    CHECK(static_cast<int>(lf.size()) == 2);
+    for (int i = 0; i < 2; ++i) {
+      CHECK_CLOSE(lf[i], golden::sp_buckle_lambda[i], 1e-7, 1e-9);
+      CHECK(lf[i] > 0.0);                     // no spurious tension (negative) factor
+    }
+    CHECK(lf[0] < lf[1]);                      // ascending
+    auto md = tov(r.modes);
+    for (int c = 0; c < 2; ++c) {
+      numpp::ndarray phi(numpp::Shape{n}, numpp::kFloat64);
+      double* p = phi.typed_data<double>();
+      for (int64_t i = 0; i < n; ++i) p[i] = md[i * 2 + c];
+      CHECK(buckle_residual(K, Kg, phi, lf[c]) < 1e-7);
+      auto Kx = tov(K.spmv(phi)), pv = tov(phi);
+      double pKp = 0; for (int64_t i = 0; i < n; ++i) pKp += pv[i] * Kx[i];
+      CHECK_CLOSE(pKp, 1.0, 1e-7, 1e-9);       // K-normalized mode (φᵀ K φ = 1)
+    }
+  }
+
+  // Discriminating indefinite pencil: μ = {−0.261, −0.102, +0.178} ⇒ positive
+  // λ = {3.837, 9.766}. Smallest positive is the MOST-negative μ — a naive σ=0
+  // target would return 9.766, and a flipped filter would surface a negative λ.
+  {
+    auto K = CSR(sp_buckle2_K);
+    auto Kg = CSR(sp_buckle2_Kgeo);
+    // k = 1 pins "smallest positive ≠ nearest σ=0".
+    auto r1 = sp::eigsh_buckling(K, Kg, /*k=*/1, /*sigma0=*/0.0, /*tol=*/1e-10, /*maxiter=*/0);
+    CHECK(r1.converged);
+    auto lf1 = tov(r1.load_factors);
+    CHECK(static_cast<int>(lf1.size()) == 1);
+    CHECK_CLOSE(lf1[0], golden::sp_buckle2_lambda[0], 1e-6, 1e-9);   // 3.837, not 9.766
+    CHECK(lf1[0] > 0.0);
+    // k = 2 returns both positive factors ascending; the negative μ mode is filtered.
+    auto r2 = sp::eigsh_buckling(K, Kg, /*k=*/2, /*sigma0=*/0.0, /*tol=*/1e-10, /*maxiter=*/0);
+    CHECK(r2.converged);
+    auto lf2 = tov(r2.load_factors);
+    CHECK(static_cast<int>(lf2.size()) == 2);
+    for (int i = 0; i < 2; ++i) { CHECK_CLOSE(lf2[i], golden::sp_buckle2_lambda[i], 1e-6, 1e-9); CHECK(lf2[i] > 0.0); }
+    CHECK(lf2[0] < lf2[1]);
+  }
+
+  // Low-level primitive (issue option b): eigsh_gen on the indefinite pencil
+  // K_geo φ = θ K φ (A = K_geo indefinite, B = K SPD) returns the θ nearest σ.
+  // With σ below the spectrum the two nearest are the most-negative μ = {−0.261, −0.102}.
+  {
+    auto A = CSR(sp_buckle2_Kgeo);   // indefinite
+    auto B = CSR(sp_buckle2_K);      // SPD
+    const int64_t n = A.rows();
+    auto r = sp::eigsh_gen(A, B, /*k=*/2, /*sigma=*/-0.3, /*tol=*/1e-10, /*maxiter=*/0);
+    CHECK(r.converged);
+    auto th = tov(r.eigenvalues);
+    CHECK(static_cast<int>(th.size()) == 2);
+    CHECK(th[0] < th[1]);                       // ascending θ
+    CHECK(th[0] < 0.0);                         // both are the negative (compressive) μ
+    // θ back-maps to the buckling factors: λ = −1/θ = {3.837, 9.766}.
+    CHECK_CLOSE(-1.0 / th[0], golden::sp_buckle2_lambda[0], 1e-6, 1e-9);
+    CHECK_CLOSE(-1.0 / th[1], golden::sp_buckle2_lambda[1], 1e-6, 1e-9);
+    auto Evec = tov(r.eigenvectors);
+    for (int c = 0; c < 2; ++c) {               // A x = θ B x residual, B-normalized
+      numpp::ndarray x(numpp::Shape{n}, numpp::kFloat64);
+      double* p = x.typed_data<double>();
+      for (int64_t i = 0; i < n; ++i) p[i] = Evec[i * 2 + c];
+      auto Ax = tov(A.spmv(x)), Bx = tov(B.spmv(x)), xv = tov(x);
+      double num = 0, den = 0, xBx = 0;
+      for (int64_t i = 0; i < n; ++i) { double rr = Ax[i] - th[c] * Bx[i]; num += rr * rr; den += Ax[i] * Ax[i]; xBx += xv[i] * Bx[i]; }
+      CHECK(std::sqrt(num / den) < 1e-7);
+      CHECK_CLOSE(xBx, 1.0, 1e-7, 1e-9);
+    }
+  }
+
+  // Too few positive modes is signaled, not hidden: the 3-DOF discriminating pencil
+  // has only two positive load factors (its third pencil eigenvalue μ > 0 maps to a
+  // negative, filtered λ), so asking for three reports converged = false with only
+  // the two positive factors it resolved.
+  {
+    auto K = CSR(sp_buckle2_K);
+    auto Kg = CSR(sp_buckle2_Kgeo);
+    auto r = sp::eigsh_buckling(K, Kg, /*k=*/3, /*sigma0=*/0.0, /*tol=*/1e-10, /*maxiter=*/0);
+    CHECK(!r.converged);
+    auto lf = tov(r.load_factors);
+    CHECK(static_cast<int>(lf.size()) == 2);
+    for (double v : lf) CHECK(v > 0.0);
+    CHECK(r.shifts > 0);                        // the adaptive-σ walk ran
+  }
+}
+
 TEST_CASE("csgraph") {
   auto G = sp::CsrMatrix::from_dense(M(sp_G));
   cv(sp::csgraph::dijkstra(G, true), golden::sp_dijkstra_d, golden::sp_dijkstra_r * golden::sp_dijkstra_c);

@@ -216,30 +216,99 @@ class TRLanczos {
   bool invariant_ = false;
 };
 
+// ---- buckling shift-walk helpers (see eigsh_buckling) ----
+
+// A trial-shift seed magnitude in μ-space from the matrix scales, so the walk
+// starts near the spectrum without any knowledge of the load factors.
+double frob_scale(const CsrMatrix& K, const CsrMatrix& Kg) {
+  double a = norm(Kg, "fro"), b = norm(K, "fro");
+  double r = (b > 0.0) ? a / b : 1.0;
+  return (std::isfinite(r) && r > 1e-300) ? r : 1.0;
+}
+
+// Factor-only definiteness probe: (K_geo − σ K) is SPD iff σ lies below the whole
+// generalized spectrum of K_geo φ = μ (K φ). Counts one factorization in `shifts`.
+bool probe_definite(const CsrMatrix& K, const CsrMatrix& Kg, double sigma, int& shifts) {
+  ++shifts;
+  CsrMatrix S = Kg.add(K.scaled(-sigma));
+  auto f = d::sparse_direct_factorize(S.rows(), d::iv(S.indptr()), d::iv(S.indices()),
+                                      d::dv(S.data()), /*RCM*/ 1);
+  return d::factorization_definite(f);
+}
+
+// A bracket in the (negative) σ axis: `lo` is definite (below the spectrum), `hi`
+// is indefinite (above μ_min). Both shifts are negative; |lo| > |hi|.
+struct Bracket { double lo; double hi; };
+
+// Geometrically expand from `seed` until one definite and one indefinite σ bound
+// the spectrum boundary μ_min. Terminates because (K_geo + |σ| K) → SPD as σ → −∞.
+Bracket bracket_below_spectrum(const CsrMatrix& K, const CsrMatrix& Kg, double seed,
+                               int& shifts, int cap) {
+  double s = (seed < 0.0) ? seed : -std::max(seed, 1e-300);
+  if (probe_definite(K, Kg, s, shifts)) {                 // already below: shrink |σ| toward 0
+    double lo = s, hi = s * 0.5;
+    for (int i = 0; i < cap && probe_definite(K, Kg, hi, shifts); ++i) { lo = hi; hi *= 0.5; }
+    return {lo, hi};
+  }
+  double hi = s, lo = s * 2.0;                             // still above: grow |σ| toward −∞
+  for (int i = 0; i < cap && !probe_definite(K, Kg, lo, shifts); ++i) { hi = lo; lo *= 2.0; }
+  return {lo, hi};
+}
+
+// Bisect the bracket a few times; stop loosely once σ* = lo sits ~20–50% below
+// μ_min (magnitude ratio < 2) — close enough for strong shift-invert amplification,
+// far enough for a well-conditioned SPD factor in the production solve.
+double refine_shift(const CsrMatrix& K, const CsrMatrix& Kg, Bracket br, int& shifts, int cap) {
+  for (int i = 0; i < cap && std::fabs(br.lo) > 2.0 * std::fabs(br.hi); ++i) {
+    double mid = 0.5 * (br.lo + br.hi);
+    if (probe_definite(K, Kg, mid, shifts)) br.lo = mid; else br.hi = mid;
+  }
+  return br.lo;
+}
+
+// From ascending pencil eigenvalues μ (of K_geo φ = μ K φ), keep the negative ones
+// as load factors λ = −1/μ (already ascending) with their modes, up to k.
+void collect_positive(const double* mu, const std::vector<Vec>& modes, int m, int k,
+                      std::vector<double>& lam, std::vector<Vec>& out) {
+  for (int i = 0; i < m && static_cast<int>(lam.size()) < k; ++i) {
+    if (mu[i] < 0.0) { lam.push_back(-1.0 / mu[i]); out.push_back(modes[i]); }
+  }
+}
+
 }  // namespace
 
-EigshResult eigsh(const CsrMatrix& K, const CsrMatrix& M, int k,
-                  double sigma, double tol, int maxiter) {
-  int64_t n = K.rows();
+// Shared thick-restart shift-invert Lanczos for the symmetric pencil A x = θ B x
+// (B SPD; A may be indefinite). eigsh and eigsh_gen are thin forwarders; the only
+// difference between the two public entry points is which operand is named the
+// stiffness — the recurrence only ever requires the inner-product matrix B to be
+// SPD, and A's indefiniteness is absorbed by the one-time (A − σ B) factorization.
+EigshResult eigsh_core(const CsrMatrix& A, const CsrMatrix& B, int k,
+                       double sigma, double tol, int maxiter) {
+  int64_t n = A.rows();
   EigshResult out;
   if (k <= 0 || n <= 0) return out;
   if (k > n) k = static_cast<int>(n);
 
   // Rescale the operator so its eigenvalues θ = s/(λ − σ) are O(1) (stiff pencils
   // otherwise put the whole recurrence at magnitude ~1/λ). λ shifts back as σ + s/θ.
-  double trK = trace_sum(K), trM = trace_sum(M);
-  double s = (std::isfinite(trK) && std::isfinite(trM) && trK > 0.0 && trM > 0.0) ? trK / trM : 1.0;
+  // s only conditions the projected problem — it cancels exactly in λ = σ + s/θ —
+  // so |trace(A)| keeps s well-scaled even when A is indefinite (trace ≤ 0). For
+  // every SPD pencil (trace(A) ≥ trace(B) > 0) this equals the old trace(A)/trace(B).
+  double trA = trace_sum(A), trB = trace_sum(B);
+  double s = (std::isfinite(trA) && std::isfinite(trB) && trB > 0.0)
+                 ? std::max(std::fabs(trA), trB) / trB
+                 : 1.0;
 
-  // Shift-invert operator A = K − σ M, factored once and reused every iteration.
-  CsrMatrix A = (sigma == 0.0) ? K : K.add(M.scaled(-sigma));
-  auto fac = d::sparse_direct_factorize(A.rows(), d::iv(A.indptr()), d::iv(A.indices()),
-                                        d::dv(A.data()), /*RCM*/ 1);
-  if (!d::factorization_ok(fac)) return out;     // (K − σ M) singular: pick another sigma
+  // Shift-invert operator (A − σ B), factored once and reused every iteration.
+  CsrMatrix Ash = (sigma == 0.0) ? A : A.add(B.scaled(-sigma));
+  auto fac = d::sparse_direct_factorize(Ash.rows(), d::iv(Ash.indptr()), d::iv(Ash.indices()),
+                                        d::dv(Ash.data()), /*RCM*/ 1);
+  if (!d::factorization_ok(fac)) return out;     // (A − σ B) singular: pick another sigma
 
   int ncv = std::min<int>(static_cast<int>(n), std::max(2 * k + 1, 20));
   int maxcycles = (maxiter > 0) ? maxiter : 200;
-  Operator op{&M, fac, s};
-  TRLanczos lz(M, op, ncv);
+  Operator op{&B, fac, s};
+  TRLanczos lz(B, op, ncv);
   lz.seed(start_vector(n));
 
   int start = 0, steps = 0;
@@ -256,13 +325,13 @@ EigshResult eigsh(const CsrMatrix& K, const CsrMatrix& M, int k,
     converged = true;
     for (int idx : pick) {
       Vec x = ritz_vector(lz.V(), S, lz.dim(), idx);
-      if (gen_residual(K, M, x, sigma + s / theta[idx]) > tol) { converged = false; break; }
+      if (gen_residual(A, B, x, sigma + s / theta[idx]) > tol) { converged = false; break; }
     }
     if (converged || lz.invariant() || cyc == maxcycles - 1) break;
     start = lz.restart(theta, S, k);
   }
 
-  // Materialize eigenvalues and (n × k) mass-normalized eigenvectors.
+  // Materialize eigenvalues and (n × k) B-normalized eigenvectors.
   int kk = static_cast<int>(pick.size()), dim = lz.dim();
   const double* theta = tri.eigenvalues.typed_data<double>();
   const double* S = tri.eigenvectors.typed_data<double>();
@@ -279,6 +348,69 @@ EigshResult eigsh(const CsrMatrix& K, const CsrMatrix& M, int k,
   out.eigenvectors = evecs;
   out.iterations = steps;
   out.converged = converged;
+  return out;
+}
+
+EigshResult eigsh(const CsrMatrix& K, const CsrMatrix& M, int k,
+                  double sigma, double tol, int maxiter) {
+  return eigsh_core(K, M, k, sigma, tol, maxiter);
+}
+
+EigshResult eigsh_gen(const CsrMatrix& A, const CsrMatrix& B, int k,
+                      double sigma, double tol, int maxiter) {
+  return eigsh_core(A, B, k, sigma, tol, maxiter);
+}
+
+BucklingResult eigsh_buckling(const CsrMatrix& K, const CsrMatrix& K_geo, int k,
+                              double sigma0, double tol, int maxiter) {
+  int64_t n = K.rows();
+  BucklingResult out;
+  if (k <= 0 || n <= 0) return out;
+  if (k > n) k = static_cast<int>(n);
+
+  // Locate a shift strictly below the whole μ-spectrum of K_geo φ = μ (K φ) using
+  // cheap factor-only definiteness probes, so the k eigenvalues nearest σ* are the
+  // k most-negative μ = k smallest positive load factors λ = −1/μ.
+  double seed = (sigma0 > 0.0) ? -1.0 / sigma0 : -frob_scale(K, K_geo);
+  int shifts = 0;
+  Bracket br = bracket_below_spectrum(K, K_geo, seed, shifts, /*cap*/ 60);
+  double star = refine_shift(K, K_geo, br, shifts, /*cap*/ 8);
+
+  // One generalized shift-invert solve; probe a few extra modes so ≥ k negative-μ
+  // survivors remain after filtering. Nudge σ* further below on a singular ridge.
+  int kp = std::min<int>(static_cast<int>(n), k + std::max(k, 4));
+  EigshResult r = eigsh_gen(K_geo, K, kp, star, tol, maxiter);
+  if (r.eigenvalues.size() == 0) {
+    star *= 1.1;
+    r = eigsh_gen(K_geo, K, kp, star, tol, maxiter);
+  }
+
+  int m = static_cast<int>(r.eigenvalues.size());
+  if (m == 0) { out.shifts = shifts; return out; }
+  const double* mu = r.eigenvalues.typed_data<double>();
+  const double* ev = r.eigenvectors.typed_data<double>();
+  std::vector<Vec> modes(m, Vec(static_cast<size_t>(n)));
+  for (int c = 0; c < m; ++c)
+    for (int64_t i = 0; i < n; ++i) modes[c][static_cast<size_t>(i)] = ev[i * m + c];
+
+  std::vector<double> lam;
+  std::vector<Vec> keep;
+  collect_positive(mu, modes, m, k, lam, keep);
+
+  int kk = static_cast<int>(lam.size());
+  numpp::ndarray lf(numpp::Shape{kk}, numpp::kFloat64);
+  numpp::ndarray md(numpp::Shape{n, kk}, numpp::kFloat64);
+  double* lp = lf.typed_data<double>();
+  double* mp = md.typed_data<double>();
+  for (int c = 0; c < kk; ++c) {
+    lp[c] = lam[static_cast<size_t>(c)];
+    for (int64_t i = 0; i < n; ++i) mp[i * kk + c] = keep[static_cast<size_t>(c)][static_cast<size_t>(i)];
+  }
+  out.load_factors = lf;
+  out.modes = md;
+  out.iterations = r.iterations;
+  out.shifts = shifts;
+  out.converged = r.converged && kk >= k;
   return out;
 }
 
