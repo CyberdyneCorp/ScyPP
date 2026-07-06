@@ -89,3 +89,40 @@ target_include_directories(scipp PUBLIC
   $<INSTALL_INTERFACE:include>)
 
 target_link_libraries(scipp PUBLIC numpp::numpp)
+
+# A semver ABI version on the shared library so consumers can pin compatibility.
+set_target_properties(scipp PROPERTIES
+  VERSION ${PROJECT_VERSION}
+  SOVERSION ${PROJECT_VERSION_MAJOR})
+
+# -----------------------------------------------------------------------------
+# Install / export (find_package(SciPP) support)
+# -----------------------------------------------------------------------------
+include(GNUInstallDirs)
+include(CMakePackageConfigHelpers)
+
+install(TARGETS scipp EXPORT SciPPTargets
+  LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+  ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+  RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+  INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+
+# Ship both *.hpp and *.h so C headers reachable from the umbrella header install too.
+install(DIRECTORY ${PROJECT_SOURCE_DIR}/include/scipp DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+  FILES_MATCHING PATTERN "*.hpp" PATTERN "*.h")
+# Generated headers live in the build tree, not the source include/, so install them explicitly.
+install(FILES ${PROJECT_BINARY_DIR}/generated/scipp/version.hpp
+              ${PROJECT_BINARY_DIR}/generated/scipp/config.hpp
+  DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/scipp)
+
+install(EXPORT SciPPTargets NAMESPACE scipp:: DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/SciPP)
+
+configure_package_config_file(
+  ${PROJECT_SOURCE_DIR}/cmake/SciPPConfig.cmake.in
+  ${PROJECT_BINARY_DIR}/SciPPConfig.cmake
+  INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/SciPP)
+write_basic_package_version_file(
+  ${PROJECT_BINARY_DIR}/SciPPConfigVersion.cmake
+  VERSION ${PROJECT_VERSION} COMPATIBILITY SameMajorVersion)
+install(FILES ${PROJECT_BINARY_DIR}/SciPPConfig.cmake ${PROJECT_BINARY_DIR}/SciPPConfigVersion.cmake
+  DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/SciPP)

@@ -1,0 +1,56 @@
+name: Bug report
+description: Report incorrect behavior, a crash, or a numerical discrepancy vs SciPy
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. For **security** issues, do not file here — see
+        [SECURITY.md](https://github.com/CyberdyneCorp/SciPP/blob/main/SECURITY.md).
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What went wrong, and what did you expect instead (e.g. what SciPy returns)?
+      placeholder: scipp::linalg::eig returns eigenvalues in a different order than scipy.linalg.eig for ...
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: A minimal case — the routine called, input array/matrix or parameters, and how you drove it.
+      placeholder: |
+        auto x = scipp::special::gamma(...);
+        // or a short program / the SciPy snippet you compared against
+    validations:
+      required: true
+  - type: input
+    id: subpackage
+    attributes:
+      label: Subpackage
+      placeholder: special / linalg / fft / optimize / integrate / interpolate / stats / signal / sparse / spatial / ndimage / cluster / odr / io
+    validations:
+      required: true
+  - type: input
+    id: backend
+    attributes:
+      label: Backend
+      placeholder: CPU (default) / BLAS / LAPACK / CUDA / OpenCL / Metal
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, compiler + version, CMake version, NumPP version, GPU + driver (if relevant), commit/tag.
+      placeholder: |
+        Ubuntu 24.04, GCC 13.3, CMake 3.28, NumPP 1.6.0, commit abc1234
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / output
+      description: Relevant build or run output (paste as text or attach files).
+      render: shell

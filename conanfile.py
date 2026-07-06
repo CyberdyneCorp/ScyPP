@@ -4,7 +4,7 @@ from conan.tools.cmake import CMakeToolchain, CMake, cmake_layout
 
 class SciPPConan(ConanFile):
     name = "scipp"
-    version = "1.0.0"
+    version = "1.6.0"
     license = "MIT"
     description = "Modern C++20 port of SciPy, built on NumPP"
     settings = "os", "compiler", "build_type", "arch"
