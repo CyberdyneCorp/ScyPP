@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.6.0 — 2026-07-06 — production-readiness: install/export, governance, consumability spec
+
+Makes SciPP consumable by others without vendoring, and formalizes the "usable by
+others" bar.
+
+### Packaging
+- **Install/export rules**: `find_package(SciPP CONFIG)` now works. Installs the
+  `scipp` target and headers, exports `SciPPTargets` under the `scipp::` namespace,
+  and generates `SciPPConfig`/`SciPPConfigVersion`. `SciPPConfig` re-resolves the
+  transitive NumPP dependency via `find_dependency(NumPP CONFIG)`. The library carries
+  `VERSION`/`SOVERSION` for a pinnable ABI. Verified end-to-end with a downstream
+  `find_package(SciPP)` consumer that configures, links `scipp::scipp`, and runs.
+- Synced the version across `CMakeLists.txt`, `conanfile.py`, and `vcpkg.json` (the
+  Conan/vcpkg manifests had drifted to `1.0.0`).
+
+### Governance & docs
+- Added `CONTRIBUTING.md`, `SECURITY.md` (private vulnerability reporting),
+  `CODE_OF_CONDUCT.md`, issue templates, and a pull-request template.
+- Added the `consumability` OpenSpec capability spec — a portable readiness rubric.
+- README: documented the installed-package consumption path and a
+  **Versioning & API stability** section (semver + `SOVERSION`).
+
 ## 1.5.0 — 2026-07-04 — sparse buckling eigensolver: indefinite `A`, SPD `B`, smallest positive `λ`
 
 Adds [#18](https://github.com/CyberdyneCorp/SciPP/issues/18): a scalable path to
