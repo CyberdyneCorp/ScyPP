@@ -39,9 +39,57 @@ ndarray E      = scipp::linalg::expm(Asq);    // matrix exponential
 ```
 
 > **All 12 subpackages are implemented** (`special`, `constants`, `linalg`, `fft`,
-> `optimize`, `integrate`, `differentiate`, `interpolate`, `stats`, `signal`,
+> `optimize`, `integrate`, `differentiate`, `interpolate`, `stats`, `signal`, `odr`,
 > `sparse`, `spatial`, `ndimage`, `cluster`, `io`). Deferred long-tail features are
 > tracked as open OpenSpec backlog changes under `openspec/changes/`.
+
+## Architecture
+
+SciPP is the science layer: each subpackage takes `numpp::ndarray` in and out, and
+delegates all array math, BLAS/LAPACK, and GPU work to the **NumPP** engine, which
+in turn routes every operation through a single runtime dispatch that selects the
+best available backend and always falls back to the portable CPU kernel. Real SciPy
+is the numerical oracle every result is validated against.
+
+```mermaid
+flowchart TB
+    subgraph SCIPP["SciPP - scipp:: (C++20 port of SciPy)"]
+        MATH["special - constants - linalg - fft/fftpack"]
+        NUM["optimize - integrate - differentiate - interpolate"]
+        DATA["stats - signal - odr - cluster - io"]
+        STRUCT["sparse - spatial - ndimage"]
+    end
+
+    subgraph NUMPP["NumPP engine - numpp::"]
+        ARR["ndarray - dtypes - ufuncs"]
+        NLA["linalg - fft - random"]
+    end
+
+    REG["Runtime dispatch: CapabilityRegistry - weak GpuVTable - last_backend()"]
+
+    subgraph BACK["Backends - selected at runtime"]
+        CPU["Portable CPU kernel (always present)"]
+        BLAS["BLAS / LAPACK"]
+        GPU["CUDA - OpenCL - Metal"]
+    end
+
+    MATH --> ARR
+    NUM --> ARR
+    DATA --> ARR
+    STRUCT --> ARR
+    ARR --> NLA
+    NLA --> REG
+    REG --> CPU
+    REG --> BLAS
+    REG --> GPU
+
+    SCIPY["SciPy 1.15 - numerical oracle"] -. validates .-> SCIPP
+
+    style SCIPP fill:#0B5394,color:#fff
+    style NUMPP fill:#1155CC,color:#fff
+    style REG fill:#B45309,color:#fff
+    style SCIPY fill:#38761D,color:#fff
+```
 
 ## Why SciPP
 
@@ -91,7 +139,7 @@ namespace. See [`openspec/project.md`](openspec/project.md) for the full map.
 | `special` · `constants` | Special functions (gamma/erf/Bessel/orthogonal polys), CODATA constants |
 | `linalg` | Decompositions, matrix functions, solvers (BLAS/LAPACK + GPU GEMM) |
 | `fft` · `fftpack` | FFT, real/N-D transforms, DCT/DST (GPU-accelerated) |
-| `optimize` | `minimize`, `root`, `least_squares`/`curve_fit`, `linprog`/`milp` |
+| `optimize` · `odr` | `minimize`, `root`, `least_squares`/`curve_fit`, `linprog`/`milp`; orthogonal-distance (total-least-squares) regression |
 | `integrate` · `differentiate` | `quad`, `solve_ivp`, `solve_bvp`, finite differences |
 | `interpolate` | `interp1d`, splines, `griddata`/`RBFInterpolator` |
 | `stats` | Distributions, hypothesis tests, QMC, `gaussian_kde` |
@@ -103,9 +151,9 @@ namespace. See [`openspec/project.md`](openspec/project.md) for the full map.
 
 ## Project status
 
-**v1.0 — all 12 phases shipped.** Every public SciPy subpackage's commonly-used
-surface is ported, built on NumPP and validated against SciPy 1.15 — **7673 oracle
-checks, 0 divergences**:
+**v1.6 — all 12 phases shipped.** Every public SciPy subpackage's commonly-used
+surface is ported, built on NumPP and validated against SciPy 1.15 — **146 cases /
+7710 oracle checks, 0 divergences**:
 
 - **Phase 1** — `scipp::special` (gamma/erf/Bessel/exponential integrals/
   orthogonal evaluators/combinatorics/`logsumexp`/`softmax`) and `scipp::constants`
@@ -215,6 +263,7 @@ just test                      # configure + build + run scipp_tests
 just ctest                     # the same suite through CTest
 
 # Other common recipes
+just gpu-detect                # probe this host for CUDA/OpenCL/Metal, recommend a flag
 just build                     # configure + compile library and tests
 just debug                     # Debug build with assertions
 just gcc                       # build + test with GCC
@@ -227,10 +276,12 @@ just clean                     # remove all build dirs
 
 Plain CMake still works if you prefer it (`cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j`).
 
-For **GPU acceleration**, pass the backend flag through `just configure` (requires a
-NumPP package built with the matching backend):
+For **GPU acceleration**, probe the host first and then pass the recommended backend
+flag through `just configure` (requires a NumPP package built with the matching
+backend):
 
 ```bash
+just gpu-detect                        # Linux/macOS/Windows: reports CUDA/OpenCL/Metal + a flag
 just configure -DSCIPP_WITH_CUDA=ON    # or -DSCIPP_WITH_OPENCL=ON / -DSCIPP_WITH_METAL=ON
 just build
 ```
