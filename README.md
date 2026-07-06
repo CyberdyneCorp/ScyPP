@@ -247,6 +247,40 @@ re-implements its algorithms in portable C++ (no CPython C-API, no `PyObject`) a
 adds GPU acceleration where SciPy has none. Spec requirements cite the SciPy source
 they port as breadcrumbs, e.g. `(oracle: scipy/linalg/_decomp_lu.py)`.
 
+## Consuming an installed SciPP
+
+SciPP installs a `find_package(SciPP)` CONFIG package that exports the namespaced
+`scipp::scipp` target and re-resolves its NumPP dependency transitively — no vendoring:
+
+```bash
+cmake --install build --prefix /your/prefix     # after a build
+```
+
+```cmake
+# downstream CMakeLists.txt
+find_package(SciPP CONFIG REQUIRED)
+target_link_libraries(your_app PRIVATE scipp::scipp)
+```
+
+Point `CMAKE_PREFIX_PATH` at the SciPP prefix (and the NumPP prefix it depends on).
+The library is also packaged for Conan (`conanfile.py`) and vcpkg (`vcpkg.json`).
+
+## Versioning & API stability
+
+SciPP follows **[semantic versioning](https://semver.org/)**. The API is still settling:
+minor releases may carry breaking changes until the project commits to long-term API
+stability. The shared library carries a semver `SOVERSION` (`libscipp.so.<major>`) so
+consumers can pin ABI compatibility, and the version is declared once in `CMakeLists.txt`
+and kept in sync across `conanfile.py` and `vcpkg.json`. Notable changes are tracked in
+[CHANGELOG.md](CHANGELOG.md).
+
+## Contributing
+
+Work is spec-driven. Before writing code, read the relevant spec in `openspec/specs/` and
+open changes through the OpenSpec workflow. Every bug fix ships with a regression test. See
+**[CONTRIBUTING.md](CONTRIBUTING.md)** for the full workflow, the
+[Code of Conduct](CODE_OF_CONDUCT.md), and [security reporting](SECURITY.md).
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
