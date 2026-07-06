@@ -1,0 +1,11 @@
+@PACKAGE_INIT@
+
+# SciPP's public headers include NumPP and the library links numpp::numpp, so a
+# consumer of an installed SciPP needs NumPP discoverable too. Re-resolve it
+# transitively (the same CONFIG package the build used).
+include(CMakeFindDependencyMacro)
+find_dependency(NumPP CONFIG)
+
+include("${CMAKE_CURRENT_LIST_DIR}/SciPPTargets.cmake")
+
+check_required_components(SciPP)
